@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.tools/
+coverage/
+test-results/
+public/wasm/
+.env*
+!.env.example
+data/*
+!data/README.md
+*.local
+*.log
+.DS_Store

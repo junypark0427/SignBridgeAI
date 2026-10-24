@@ -1,0 +1,31 @@
+import 'fake-indexeddb/auto';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DatasetManager, emptyDataset, mergeDatasets } from '../src/collector/datasetManager.js';
+import { dataset, sample, sign } from './fixtures.js';
+test('merge deduplicates by ID and content, rejects conflicts, and separates KSL/ASL', () => {
+  const d = dataset();
+  assert.equal(mergeDatasets(d, JSON.parse(JSON.stringify(d))).duplicates, 2);
+  const conflict = dataset(); conflict.samples[0].signer_id = 'different'; assert.throws(() => mergeDatasets(d, conflict), /ID 충돌/);
+  const asl = { ...sign, sign_id: 'asl-fixture', language: 'ASL' };
+  const merged = mergeDatasets(d, { ...emptyDataset(), signs: [asl], samples: [sample({ sample_id: 'asl-1', sign_id: asl.sign_id, language: 'ASL' })] });
+  assert.equal(merged.added, 1); assert.equal(merged.dataset.samples.length, 2);
+});
+test('IndexedDB restores across connections, merges atomically, deletes, and persists settings', async () => {
+  const a = await new DatasetManager().open();
+  await a.merge(dataset()); await a.setting('capture', { signer_id: 'anonymous' }); a.close();
+  const b = await new DatasetManager().open();
+  assert.equal((await b.read()).samples.length, 1); assert.equal((await b.setting('capture')).signer_id, 'anonymous');
+  const broken = dataset(); broken.samples[0].frames[0].hands[0].landmarks.pop();
+  await assert.rejects(b.merge(broken)); assert.equal((await b.read()).samples[0].frames[0].hands[0].landmarks.length, 21);
+  const c = await new DatasetManager().open();
+  await Promise.all([b.merge({ ...emptyDataset(), signs: [sign], samples: [sample({ sample_id: 'b' })] }), c.merge({ ...emptyDataset(), signs: [sign], samples: [sample({ sample_id: 'c' })] })]);
+  assert.equal((await b.read()).samples.length, 3);
+  await b.deleteSample('b'); assert.equal((await b.read()).samples.length, 2);
+  await assert.rejects(b.deleteSign(sign.sign_id), /시퀀스가 있는/);
+  const conflict = dataset(); conflict.samples[0].signer_id = 'other';
+  await assert.rejects(b.merge(conflict)); assert.equal((await b.read()).samples.length, 2);
+  await b.merge({ ...emptyDataset(), signs: [{ ...sign, sign_id: 'empty-sign' }] });
+  await b.deleteSign('empty-sign'); assert.equal((await b.read()).signs.length, 1);
+  b.close(); c.close();
+});
