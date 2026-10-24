@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#4778e5" />
+    <title>Hand AI | 실시간 AI 손동작 인식</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-hand" aria-hidden="true">✋</span>
+          <strong>Hand AI</strong>
+          <span class="brand-divider"></span>
+          <span class="brand-subtitle">실시간 AI 손동작 인식</span>
+        </div>
+        <p class="topbar-slogan">손동작으로 더 가까워지는 소통</p>
+      </header>
+
+      <main class="dashboard">
+        <section class="left-column">
+          <div class="camera-panel" id="cameraPanel">
+            <video id="cameraVideo" autoplay playsinline muted hidden></video>
+            <canvas id="landmarkCanvas" hidden></canvas>
+            <div class="camera-placeholder" id="cameraPlaceholder">
+              <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M8 20a5 5 0 0 1 5-5h8l5-7h13l5 7h7a5 5 0 0 1 5 5v29a5 5 0 0 1-5 5H13a5 5 0 0 1-5-5z"/><circle cx="32" cy="33" r="10"/></svg>
+              <p>웹캠이 연결되면<br />영상이 표시됩니다.</p>
+            </div>
+            <div class="camera-live-label" id="cameraLiveLabel" hidden><span></span> 카메라 연결됨</div>
+          </div>
+
+          <section class="panel gestures-panel">
+            <div class="section-heading">
+              <h2><span class="heading-icon">♧</span> 인식 가능한 손동작</h2>
+              <button class="button button-add" id="toggleGestureForm" type="button">＋ 새 손동작 추가</button>
+            </div>
+            <div class="gesture-grid">
+              <article class="gesture-card gesture-green"><div class="gesture-art">👍</div><div class="gesture-info"><h3>엄지 올리기</h3><p>“좋아요”</p></div></article>
+              <article class="gesture-card gesture-pink"><div class="gesture-art">👎</div><div class="gesture-info"><h3>엄지 내리기</h3><p>“싫어요”</p></div></article>
+              <article class="gesture-card gesture-yellow"><div class="gesture-art">✊</div><div class="gesture-info"><h3>주먹 쥐기</h3><p>“정지”</p></div></article>
+              <article class="gesture-card gesture-blue"><div class="gesture-art">✋</div><div class="gesture-info"><h3>손바닥 펼치기</h3><p>“안녕하세요”</p></div></article>
+              <article class="gesture-card gesture-purple"><div class="gesture-art">✌️</div><div class="gesture-info"><h3>브이</h3><p>“승리!”</p></div></article>
+            </div>
+            <form class="gesture-form" id="gestureForm" hidden>
+              <div class="form-heading">
+                <div>
+                  <h3>나만의 손동작 학습</h3>
+                  <p>카메라를 켜고 같은 손동작을 여러 각도에서 기록해 주세요. 5회 이상을 권장합니다.</p>
+                </div>
+                <button class="icon-button" id="closeGestureForm" type="button" aria-label="학습 폼 닫기">×</button>
+              </div>
+              <div class="gesture-fields">
+                <label>손동작 이름<input id="gestureName" name="name" maxlength="20" placeholder="예: 손가락 하트" required /></label>
+                <label>표시할 의미<input id="gestureMeaning" name="meaning" maxlength="30" placeholder="예: 사랑해요" required /></label>
+                <label class="emoji-field">이모지<input id="gestureEmoji" name="emoji" maxlength="4" value="✨" aria-label="손동작 이모지" /></label>
+              </div>
+              <div class="sample-actions">
+                <button class="button button-capture" id="captureSample" type="button" disabled>＋ 현재 손 모양 기록</button>
+                <span id="sampleCount" aria-live="polite">샘플 0개 · 카메라를 켜고 손을 비춰 주세요</span>
+              </div>
+              <div class="form-footer">
+                <p>최소 3개, 권장 5개 이상 필요 · 카메라 영상은 저장되지 않습니다.</p>
+                <button class="button button-save" id="saveGesture" type="submit" disabled>손동작 저장</button>
+              </div>
+            </form>
+            <div class="dataset-tools">
+              <span id="datasetStatus">사용자 손동작은 이 브라우저에 저장됩니다.</span>
+              <button id="exportDataset" type="button">학습 데이터 JSON 백업</button>
+            </div>
+          </section>
+        </section>
+
+        <aside class="right-column">
+          <div class="action-row">
+            <button class="button button-start" id="startButton"><span class="play-icon">▶</span> 인식 시작</button>
+            <button class="button button-stop" id="stopButton" disabled><span class="stop-icon">■</span> 인식 중지</button>
+          </div>
+          <section class="panel result-panel">
+            <h2><span class="target-icon">◎</span> 현재 인식 결과</h2>
+            <div class="result-box" aria-live="polite">
+              <div class="result-emoji" id="resultEmoji">✋</div>
+              <p id="resultText">아직 인식된 손동작이 없습니다.</p>
+              <small id="resultHint">인식 시작을 눌러 카메라를 연결하세요.</small>
+              <div class="confidence-track"><div id="confidenceBar"></div></div>
+              <small id="confidenceText"></small>
+            </div>
+          </section>
+          <section class="panel history-panel">
+            <h2><span class="clock-icon">◷</span> 최근 인식 기록</h2>
+            <div class="history-list" id="historyList"><div class="empty-history">손동작이 인식되면 이곳에 기록됩니다.</div></div>
+          </section>
+        </aside>
+      </main>
+      <footer>Hand AI&nbsp;&nbsp; | &nbsp;&nbsp;실시간 손동작 인식 웹 애플리케이션</footer>
+      <div class="toast" id="toast" role="status"></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
