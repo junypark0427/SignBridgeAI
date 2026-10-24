@@ -88,9 +88,11 @@ function controls() {
     "export-json",
   ])
     $(id).disabled = busy || !storageReady;
-  document.querySelectorAll('[name="language"]').forEach((el) => {
-    el.disabled = busy || !storageReady;
-  });
+  document
+    .querySelectorAll('.language-field input[name="language"]')
+    .forEach((el) => {
+      el.disabled = busy || !storageReady;
+    });
   $("camera-device").disabled = cameraRunning || cameraBusy;
   $("camera-toggle").disabled = cameraBusy;
   $("camera-start-hero").disabled = cameraBusy;
@@ -138,10 +140,13 @@ async function renderSync() {
 }
 function queueSync() {
   if (sync)
-    sync.run().catch((error) => {
-      databaseStatus("클라우드 동기화 오류 · 로컬 보존");
-      showError(error);
-    });
+    sync
+      .run()
+      .then(() => cloudUI.refresh())
+      .catch((error) => {
+        databaseStatus("클라우드 동기화 오류 · 로컬 보존");
+        showError(error);
+      });
 }
 async function refresh() {
   dataset = await store.read();
@@ -428,13 +433,16 @@ async function registerSign(event) {
   await mutate(async () => {
     await store.merge({ ...emptyDataset(), signs: [sign] });
     language = sign.language;
-    document.querySelector(`[name="language"][value="${language}"]`).checked =
-      true;
+    document.querySelector(
+      `.language-field input[name="language"][value="${language}"]`,
+    ).checked = true;
     $("sign-dialog").close();
     await refresh();
     $("sign-select").value = sign.sign_id;
     render();
-    ui.status(`“${sign.label}” 단어를 등록했습니다.`);
+    ui.status(
+      `“${sign.label}” 단어를 이 기기에 등록했습니다. 녹화한 시퀀스를 저장해야 팀에 공유됩니다.`,
+    );
   });
 }
 async function removeSample(id) {
@@ -523,14 +531,16 @@ $("cancel-countdown").onclick = () => {
 };
 $("sign-select").onchange = render;
 $("filter-sign").onchange = render;
-document.querySelectorAll('[name="language"]').forEach((el) => {
-  el.onchange = () => {
-    language = el.value;
-    $("sign-select").value = "";
-    $("filter-sign").value = "";
-    render();
-  };
-});
+document
+  .querySelectorAll('.language-field input[name="language"]')
+  .forEach((el) => {
+    el.onchange = () => {
+      language = el.value;
+      $("sign-select").value = "";
+      $("filter-sign").value = "";
+      render();
+    };
+  });
 $("add-sign").onclick = () => {
   $("sign-form").reset();
   $("sign-language").value = language;
@@ -607,6 +617,7 @@ $("export-json").onclick = downloadJSON;
 $("import-json").onclick = () => $("import-file").click();
 $("import-file").onchange = importJSON;
 document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && location.hash === "#train/collect") cloudUI.refresh();
   if (document.hidden && (cameraRunning || cameraBusy || countdownActive))
     stopCamera(
       "탭이 숨겨져 카메라를 종료했습니다. 진행 중인 녹화는 취소되었습니다.",
@@ -674,6 +685,7 @@ async function init() {
 mountStudio({
   repository,
   getLocal: () => store.read(),
+  onCollect: () => cloudUI.refresh(),
   leaveCollector: () => {
     if (pending) {
       ui.status("검토 중인 시퀀스의 저장 여부를 먼저 선택하세요.");

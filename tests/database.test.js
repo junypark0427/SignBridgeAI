@@ -12,6 +12,34 @@ import { configureSupabase } from "../src/database/supabaseClient.js";
 const validSample = () =>
   sample({ sample_id: "b7b18c75-c0ec-4f00-b55e-a2efa6a19907" });
 
+test("shared default includes both languages while excluding synthetic tests; optional filters remain independent", () => {
+  const applied = [];
+  const query = {
+    eq(key, value) {
+      applied.push([key, value]);
+      return this;
+    },
+  };
+  const repo = new SampleRepository({
+    from() {
+      return {
+        select() {
+          return query;
+        },
+      };
+    },
+  });
+  repo.query({ language: "", sign_id: "", signer_id: "", session_id: "" });
+  assert.deepEqual(applied, [["is_test", false]]);
+  applied.length = 0;
+  repo.query({ language: "ASL", signer_id: "someone" });
+  assert.deepEqual(applied, [
+    ["is_test", false],
+    ["language", "ASL"],
+    ["signer_id", "someone"],
+  ]);
+});
+
 test("cloud mapping round trip includes raw timing, capture, sign sources and only allowed fields", () => {
   const s = validSample();
   s.private_note = "never upload";

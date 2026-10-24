@@ -450,7 +450,12 @@ class TryUI {
   }
 }
 
-export function mountStudio({ repository, getLocal, leaveCollector }) {
+export function mountStudio({
+  repository,
+  getLocal,
+  leaveCollector,
+  onCollect = () => {},
+}) {
   const main = document.querySelector("main"),
     collection = document.createElement("section");
   collection.id = "collect-screen";
@@ -497,6 +502,7 @@ export function mountStudio({ repository, getLocal, leaveCollector }) {
       a.setAttribute("aria-current", a.hash === next ? "page" : "false");
     });
     window.scrollTo(0, 0);
+    if (next === "#train/collect") onCollect();
     if (next === "#try") tryUI.load("deployed");
   }
   window.addEventListener("hashchange", navigate);

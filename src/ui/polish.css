@@ -1,0 +1,114 @@
+/* Adapt the design branch's soft cards and prominent actions to the current palette. */
+.home-card {
+  border-radius: 20px;
+  box-shadow: 0 5px 22px #213e2f08;
+}
+.home-card:not(.try-card) {
+  background: linear-gradient(145deg, #fff, #f6faf4);
+}
+.try-card {
+  background: linear-gradient(130deg, #153c2b, #285640);
+}
+.home-card-icon {
+  box-shadow: inset 0 0 0 1px #ffffff40;
+}
+.camera-panel,
+.control-panel,
+.data-table-card,
+.prediction-panel {
+  box-shadow: 0 4px 18px #203e2d06;
+}
+.stats-grid .stat-card:nth-child(4n + 1) {
+  background: #f0f8f2;
+}
+.stats-grid .stat-card:nth-child(4n + 2) {
+  background: #f1f5fc;
+}
+.stats-grid .stat-card:nth-child(4n + 3) {
+  background: #fff9ef;
+}
+.stats-grid .stat-card:nth-child(4n + 4) {
+  background: #f5f1fa;
+}
+.stat-card > span,
+.stat-card p {
+  color: #5c6d60;
+}
+#try-start,
+#try-stop {
+  min-height: 48px;
+  padding-inline: 23px;
+  border-radius: 10px;
+}
+#try-start,
+#record-start {
+  background: linear-gradient(120deg, #235d46, #347250);
+}
+.prediction-panel {
+  background: linear-gradient(150deg, #fff, #f4f8f1);
+}
+.candidate {
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #edf3e8;
+}
+.dataset-scope-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 17px;
+  margin-bottom: 18px;
+  border: 1px solid #dce5ed;
+  border-radius: 10px;
+  background: #f0f5fb;
+  color: #435e75;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.dataset-scope-note p {
+  flex: 1;
+  min-width: 220px;
+}
+.dataset-scope-note strong {
+  color: #234d68;
+}
+.cloud-freshness {
+  color: #526b58;
+  font-size: 11px;
+  line-height: 1.9;
+}
+.capture-sync-status {
+  margin: 0 18px 17px;
+  padding: 12px 15px;
+  font-size: 11px;
+  line-height: 1.9;
+  border-radius: 8px;
+  background: #edf4ec;
+  color: #426048;
+  overflow-wrap: anywhere;
+}
+.capture-sync-status[data-state="error"],
+.cloud-actions [data-state="error"] {
+  color: #913d32;
+  background: #fff1ed;
+}
+.capture-sync-status[data-state="warning"],
+.capture-sync-status[data-state="pending"] {
+  color: #755b26;
+  background: #fff7e5;
+}
+.cloud-language {
+  color: #477453;
+  font-size: 10px;
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-card,
+  .button {
+    transition: none;
+  }
+  .home-card:hover {
+    transform: none;
+  }
+}
