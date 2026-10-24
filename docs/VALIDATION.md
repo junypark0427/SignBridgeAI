@@ -42,3 +42,7 @@ Windows, Node.js 24.22.1, npm 12.2.1, Vite 8.3.5, `@mediapipe/tasks-vision` 1.1.
 ## 알려진 한계
 
 해결되지 않은 빌드·자동화 테스트 오류는 없습니다. 동기식 MediaPipe 추론 및 전체 데이터 메모리 검증은 규모가 커지거나 성능이 낮은 기기에서 느려질 수 있습니다. IndexedDB의 영구 보관은 보장되지 않으며 JSON 백업이 필요합니다. 브라우저에서 실제 수어 단어의 정확성은 자동으로 판정하지 않습니다. 제한된 사전 선정 어휘만 후속 손동작 인식 모델의 대상으로 삼으세요.
+
+GPU 실행 중 MediaPipe 내부의 `OpenGL error checking is disabled` 및 `Using NORM_RECT without IMAGE_DIMENSIONS ...` 경고가 관측되었습니다. 초기화·프레임 처리·검토 동작은 완료되었지만 경고 자체를 제거한 것은 아닙니다. 영상 종횡비·손 위치·양손 가림 조건에서 좌표 정확성은 실제 수집 전 추가 점검해야 합니다.
+
+초기 구현 커밋 `312a6d8`의 [GitHub Collector checks](https://github.com/junypark0427/SignBridgeAI/actions/runs/40055685864)는 성공했습니다 (Ubuntu, Node 24, npm ci → 35개 테스트 → 프로덕션 빌드). 로컬 검증 서버는 작업 종료 시 정리했습니다. 다시 사용할 때 README의 개발 서버 명령으로 시작하세요.
