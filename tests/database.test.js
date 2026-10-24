@@ -1,0 +1,146 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { sample, sign } from "./fixtures.js";
+import {
+  toRow,
+  fromRow,
+  rowsToDataset,
+  sameRecord,
+  SampleRepository,
+} from "../src/database/sampleRepository.js";
+import { configureSupabase } from "../src/database/supabaseClient.js";
+const validSample = () =>
+  sample({ sample_id: "b7b18c75-c0ec-4f00-b55e-a2efa6a19907" });
+
+test("cloud mapping round trip includes raw timing, capture, sign sources and only allowed fields", () => {
+  const s = validSample();
+  s.private_note = "never upload";
+  const row = toRow(s, sign),
+    restored = fromRow(row);
+  assert.equal(row.id, s.sample_id);
+  assert.equal(row.frame_count, s.sequence_length);
+  assert.equal(row.private_note, undefined);
+  const { private_note, ...original } = s;
+  assert.deepEqual(restored.sample, original);
+  assert.deepEqual(restored.sign, sign);
+  assert.equal(rowsToDataset([row]).samples.length, 1);
+  assert.ok(
+    sameRecord(row, {
+      ...row,
+      start_timestamp: row.start_timestamp.replace("Z", "+00:00"),
+      uploaded_at: "server time",
+    }),
+  );
+  assert.equal(sameRecord(row, { ...row, label: "different" }), false);
+  assert.throws(() => toRow(sample(), sign), /UUID/);
+});
+test("cloud metadata conflicts and malformed records stop export", () => {
+  const a = toRow(validSample(), sign),
+    b = {
+      ...a,
+      id: crypto.randomUUID(),
+      sign_metadata: { ...sign, description: "different" },
+    };
+  assert.throws(() => rowsToDataset([a, b]), /메타데이터/);
+  assert.throws(() => fromRow({ ...a, frame_count: 9 }), /형식/);
+});
+test("missing/secret env never breaks local app or constructs a privileged client", () => {
+  assert.equal(configureSupabase({}).client, null);
+  for (const key of [
+    "sb_secret_no",
+    "eyJservice_role",
+    "sb_publishable_YOUR_PUBLIC_KEY",
+  ])
+    assert.equal(
+      configureSupabase({
+        VITE_SUPABASE_URL: "https://project.supabase.co",
+        VITE_SUPABASE_PUBLISHABLE_KEY: key,
+      }).client,
+      null,
+    );
+  assert.equal(
+    configureSupabase({
+      VITE_SUPABASE_URL: "http://unsafe.example",
+      VITE_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+    }).client,
+    null,
+  );
+});
+test("keyset export continues even if server returns fewer than requested, detects concurrent additions", async () => {
+  const rows = Array.from({ length: 23 }, (_, i) =>
+    toRow(
+      sample({
+        sample_id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+      }),
+      sign,
+    ),
+  );
+  const repo = new SampleRepository(null);
+  let calls = 0;
+  repo.count = async () => rows.length;
+  repo.page = async (_, options) => {
+    calls++;
+    const index = options.afterId
+      ? rows.findIndex((r) => r.id === options.afterId) + 1
+      : 0;
+    const result = rows.slice(index, index + 3);
+    return { rows: result, nextCursor: result.at(-1)?.id ?? null };
+  };
+  const result = await repo.exportAll({ language: "KSL" });
+  assert.equal(result.samples.length, 23);
+  assert.equal(calls, 9);
+  let countCalls = 0;
+  repo.count = async () => 23 + Number(countCalls++ > 0);
+  await assert.rejects(repo.exportAll({ language: "KSL" }), /데이터 수/);
+});
+test("upload success requires matching server record; duplicate must be verified by SELECT", async () => {
+  const s = validSample(),
+    row = toRow(s, sign);
+  let duplicate = false,
+    conflict = false,
+    readFails = false;
+  const client = {
+    from() {
+      return {
+        insert() {
+          return {
+            select() {
+              return {
+                single: async () =>
+                  duplicate
+                    ? { error: { code: "23505" } }
+                    : {
+                        data: conflict ? { ...row, label: "bad" } : row,
+                        error: null,
+                      },
+              };
+            },
+          };
+        },
+        select() {
+          return {
+            eq() {
+              return {
+                single: async () =>
+                  readFails
+                    ? { error: new Error("read denied") }
+                    : {
+                        data: conflict ? { ...row, label: "bad" } : row,
+                        error: null,
+                      },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  const repo = new SampleRepository(client);
+  assert.equal((await repo.upload(s, sign)).duplicate, false);
+  duplicate = true;
+  assert.equal((await repo.upload(s, sign)).duplicate, true);
+  conflict = true;
+  await assert.rejects(repo.upload(s, sign), /내용이 다릅니다/);
+  readFails = true;
+  await assert.rejects(repo.upload(s, sign), /read denied/);
+});

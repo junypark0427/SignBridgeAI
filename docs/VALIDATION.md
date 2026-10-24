@@ -1,5 +1,22 @@
 # 검증 기록 — 2026-10-24 (Asia/Seoul)
 
+## v0.2 통합 작업
+
+- 자동화 47개 통과: 기존 수집, 원본 검증, IndexedDB, MediaPipe 및 화면 이동 중 초기화 정리, Supabase 레코드 복원/중복 확인/페이지 누락 방지, 오프라인·재시도·내용 변경 상태, TensorFlow.js 실제 합성 학습·예측·모델 복원·중단.
+- 프로덕션 빌드 성공. TensorFlow.js 지연 로드 청크가 500kB를 넘는 빌드 경고가 있으며 빌드 실패는 아님.
+- 기존 Supabase SignBridgeAI 프로젝트 Healthy, 테이블 없음 확인 후 승인받은 SQL 적용. anon SELECT/INSERT=true, UPDATE/DELETE=false 확인.
+- 실제 API에서 KSL/ASL is_test 합성 행 2개 INSERT/SELECT, 언어·단어·촬영자·세션 필터 성공. UUID 중복과 잘못된 프레임 수 거절, 익명 UPDATE/DELETE 거절. 실제 수어·영상은 이 검사에 사용하지 않음.
+- Chrome에서 통합 메인/데이터 수집과 Supabase 연결·공용 0개(테스트 제외) 조회 확인.
+- 분리된 로컬 전용 앱에서 합성 JSON 6개 가져오기, 클래스별 유효량, 실제 브라우저 2 Epoch 학습 완료와 Loss/Accuracy 표시 확인. 이는 실제 수어 모델 평가가 아님.
+- 같은 브라우저에서 모델 IndexedDB 저장 후 새로고침·불러오기 성공. 파일 다운로드 완료 여부는 브라우저 자동화 응답 제한으로 미검증. TensorFlow.js 모델/가중치 메모리 직렬화·복원은 자동화로 통과.
+- 실제 KSL/ASL 학습 자료와 공개 모델은 아직 없음. registry의 KSL/ASL은 null이며 가상의 예측을 만들지 않음.
+- 기존 Netlify signbridgeai1.netlify.app는 최초 확인 당시 v0.1 수집기. 이후 사용자가 연결한 기존 관리 계정에서 동일 사이트의 GitHub 저장소·feature/data-collector 배포 연결을 확인하고 두 VITE Supabase 환경 변수를 All scopes/contexts로 등록함. 새 사이트·계정·프로젝트는 생성하지 않음. 최종 커밋 배포 상태는 Netlify Deploys에서 확인할 것.
+- Chrome 자동 파일 선택은 확장의 로컬 파일 접근 권한에 막혀 설정을 바꾸지 않고 앱 내 브라우저에서 JSON 가져오기·학습을 검사함. Chrome 수동 사용의 파일 선택과 자동화 확장 권한은 별개.
+
+아래는 v0.1 구현 당시의 기록이며, ‘미구현’ 등의 범위 표시는 당시 상태입니다. 현재 계약·구현 범위는 README와 MODEL_SPEC을 기준으로 합니다.
+
+## v0.1 기록
+
 ## 환경
 
 Windows, Node.js 24.22.1, npm 12.2.1, Vite 8.3.5, `@mediapipe/tasks-vision` 1.1.1. 초기 작업 폴더는 비어 있었고 기존 GitHub 저장소도 커밋이 없었습니다. 기존 Windows Git Credential Manager 계정을 사용하며 GitHub 로그인 절차를 다시 진행하지 않았습니다.

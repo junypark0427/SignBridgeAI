@@ -5,7 +5,7 @@
 - `schema_version: "1.0.0"`
 - `preprocessing_version: "wrist-scale-spatial-v1"`
 - 인식·수집 기본 단위: 개별 수어 단어 한 번의 연속 동작. 정적 표현도 여러 프레임의 시퀀스로 보존.
-- KSL/ASL은 독립된 라벨 공간을 사용. 단어 AI 학습·추론 및 번역은 현재 미구현.
+- KSL/ASL은 독립된 라벨 공간을 사용. TensorFlow.js 학습·단어 예측과 검증 자료 기반 대응 조회를 구현. 실제 수어로 학습·검증한 공개 모델과 문장 번역은 아직 제공하지 않음.
 - 초기 단어 AI는 **손동작만으로 구별 가능한 사전 선정된 제한 어휘**를 대상으로 설계. 얼굴 표정·입 모양·머리·상체 움직임은 현재 수집·인식 대상에서 제외. 모든 수어 단어를 손만으로 구별한다고 가정하지 않음.
 - MediaPipe `@mediapipe/tasks-vision@1.1.1`, Hand Landmarker `float16/1`. 모델 해시는 `public/models/manifest.json` 참조.
 
@@ -106,7 +106,7 @@ Right: 같은 구조 = 67
 pair:  right-left wrist dx, dy*(height/width), pair_presence = 3
 ```
 
-반환 결과는 `{sample_id, preprocessing_version, feature_size, frames:[{relative_timestamp, hands, relative_wrist_xy, unknown_hand_count, features}]}`. 신뢰도는 hands 메타데이터에 있으며 137차원 벡터에는 들어가지 않습니다. 상대 좌표만 쓰고 절대 위치를 무조건 제거하면 의미 구별에 필요한 정보가 사라질 수 있습니다. 향후 모델은 전체 특징, 시간 간격, 존재 마스크를 함께 고려하세요.
+반환 결과는 `{sample_id, preprocessing_version, feature_size, frames:[{relative_timestamp, hands, relative_wrist_xy, unknown_hand_count, features}]}`. 신뢰도는 hands 메타데이터에 있으며 137차원 벡터에는 들어가지 않습니다. 모델 입력 변환은 이 특징과 존재 마스크·원본 시간을 함께 사용합니다. 절대 손목·방향·양손 상대 위치를 보존합니다.
 
 ## 저장·검증·분할
 
@@ -117,17 +117,26 @@ pair:  right-left wrist dx, dy*(height/width), pair_presence = 3
 - `splitByGroup(samples, {by:'signer_id', testRatio:0.2})`: 촬영자 그룹을 통째로 보류. 대안 `by:'session_id'`. 정렬된 그룹 기반의 재현 가능한 초기 분할이며 무작위·계층화 분할은 아님. 그룹 1개면 테스트가 없다는 경고. 하나의 세션이 양쪽에 걸리면 오류.
 - 실제 평가 전에는 언어·단어별 클래스 균형을 점검하고 **서로 다른 촬영자**를 테스트에 배정할 것. 동작 시퀀스를 프레임 단위로 쪼개 무작위 분할하지 말 것.
 
-## 향후 KSL/ASL 인터페이스 (설계안, 미구현)
+## 구현된 KSL/ASL 학습·예측 인터페이스
 
 ```js
-await recognizer.load({ language, modelUrl, preprocessingVersion });
-// 공통 전처리 후 T × 137, 시간·마스크. 모델마다 T 처리 규칙을 명시.
-recognizer.predict({ features, relativeTimestamps });
-// → { language, sign_id, concept_id, label, confidence, unknown,
-//     start_timestamp, end_timestamp, model_version }
+const prepared = prepareTraining(dataset, 'KSL', selectedSignIds);
+const result = await trainer.train(prepared, {language:'KSL', allSigns:dataset.signs, epochs:30});
+const prediction = await predictSequence(result.model, result.metadata, sample);
+// → {unknown, top: null | classWithConfidence, candidates, model_version}
 ```
 
-KSL/ASL 담당자는 같은 전처리 버전을 재사용하고 별도의 모델·라벨 매핑·버전·최소 신뢰도·미등록 판정 기준을 관리합니다. 데이터 증가 후 TensorFlow.js 시퀀스 모델을 실험하고, 사용자 독립 정확도와 미등록 표현 거절률을 평가하세요. 길이 통일은 학습 파이프라인에서 패딩/마스킹 또는 시간 기반 리샘플링으로 수행하며 원본 파일은 유지합니다.
+`src/ai/sequenceInput.js`는 공통 특징을 실제 시간 기준 32개 위치에서 최근접 관측으로 선택합니다. 관측과 목표 시각 차이가 200ms를 넘으면 해당 파생 특징 슬롯은 0으로 두며 원본을 보간하지 않습니다. 각 시간 단계에 `min(duration_ms/10000,12)`를 추가해 움직임 길이를 유지합니다. 입력은 **32×138**, input_version은 `nearest-time-32-duration-v1`입니다. 원본 스키마와 전처리 버전은 바꾸지 않습니다.
+
+기본 구조는 Conv1D(24, kernel3, same, relu) → Conv1D(24, kernel3, stride2, relu) → Flatten → Dense32/relu → Dropout0.2 → Dense N/softmax입니다. Adam 0.001, categoricalCrossentropy, batch≤16, Epoch 1~200입니다. TensorFlow.js를 지연 로드하며 별도 추론 서버는 없습니다.
+
+학습에서 미감지 >30%, 10프레임 미만, 0.5초 미만은 제외합니다. 2클래스 이상, 클래스당 학습≥2·검증≥1이 필요합니다. 촬영자 그룹 보류를 우선하고 불가능하면 세션 그룹으로 분리합니다. 이 최소량은 성능 보장 기준이 아닙니다. 검증 자료를 Epoch마다 참고하므로 최종 성능에는 별도 미참여 촬영자 테스트가 필요합니다. 브라우저 한도는 2000 유효 샘플·100클래스입니다.
+
+metadata.json은 format_version=1.0.0, model_version, language, schema/preprocessing/input 버전, time_steps=32, feature_size=138, 순서 있는 classes, split_by, 샘플 수·검증 지표, confidence_threshold=0.75, margin_threshold=0.15를 포함합니다. 각 클래스에 gloss_ko/gloss_en와 검증한 대응 항목을 보존합니다. 표기는 자동 번역하지 않습니다. 대응은 양쪽 검증 표시·같은 concept_id·출처가 있어야 합니다.
+
+예측은 위 신뢰도와 상위 두 후보 차이를 만족할 때만 top을 확정합니다. 부족하면 unknown=true, top=null로 두고 실제 상위 후보를 표시합니다. 출력이 0~1 확률이고 합이 1에 가까운지도 검사합니다. 초기 임계값은 실측 보정 전 기준이며 미등록 동작 거절을 보장하지 않습니다. KSL/ASL은 별도 모델과 클래스 목록으로 저장합니다. 배포 파일·언어·입력 형상·전처리·model_version을 확인하고 모델이 없으면 예측하지 않습니다.
+
+Supabase는 원본을 한 행으로 보존하며 `sequence_length→frame_count`, `sample_id→id`로 매핑합니다. capture·시작/종료 시각·sign_metadata도 저장해 JSON으로 복원합니다. DB 상세는 DATABASE_SETUP, 모델 배포는 MODEL_DEPLOYMENT를 참고하세요.
 
 문장 확장은 단어 추론 모듈 밖에 연속 구간 분리, 비수지 신호(얼굴·상체), 언어별 문법·맥락 해석을 추가합니다. 필드 추가 시 하위 호환 정책과 버전을 정의하고 마이그레이션 없이 현재 v1 검증기를 우회하지 않습니다. 단어 문자열의 결합만으로 완전한 수어 문장 번역을 구현하지 않습니다.
 
