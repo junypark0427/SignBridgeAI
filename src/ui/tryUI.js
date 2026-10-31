@@ -282,6 +282,7 @@ export class TryUI {
   stop(message) {
     this.generation++;
     this.compareAbort?.abort();
+    this.predicting = false;
     cancelAnimationFrame(this.animation);
     clearTimeout(this.timer);
     this.collector.cancel();
