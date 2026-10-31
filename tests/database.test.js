@@ -12,6 +12,32 @@ import { configureSupabase } from "../src/database/supabaseClient.js";
 const validSample = () =>
   sample({ sample_id: "b7b18c75-c0ec-4f00-b55e-a2efa6a19907" });
 
+test("active full sample lookup is limited to the requested language, UUID and non-archived real rows", async () => {
+  const seen = [],
+    id = crypto.randomUUID();
+  const query = {
+    select() {
+      return this;
+    },
+    eq(key, value) {
+      seen.push([key, value]);
+      return this;
+    },
+    maybeSingle: async () => ({ data: { id }, error: null }),
+  };
+  const repo = new SampleRepository({ from: () => query });
+  repo.archiveSupported = true;
+  repo.ready = async () => {};
+  assert.equal((await repo.getActive(id, "KSL")).id, id);
+  assert.deepEqual(seen, [
+    ["is_test", false],
+    ["archived", false],
+    ["language", "KSL"],
+    ["id", id],
+  ]);
+  await assert.rejects(repo.getActive("bad", "KSL"), /식별자/);
+});
+
 test("shared default includes both languages while excluding synthetic tests; optional filters remain independent", () => {
   const applied = [];
   const query = {

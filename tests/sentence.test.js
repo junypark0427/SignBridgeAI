@@ -8,6 +8,8 @@ import {
   SentenceWords,
 } from "../src/sentence/koreanPhrase.js";
 import { NOUNS, PREDICATES } from "../src/sentence/lexicon.js";
+import { hand, sample, sign } from "./fixtures.js";
+import { prepareGallery, compareSequence } from "../src/ai/dtwRecognizer.js";
 const love = {
   language: "KSL",
   sign_id: "love-id",
@@ -157,4 +159,34 @@ test("조사와 기본형·현재형 활용은 받침, 대명사, ㄹ 받침을 
     "사랑을 배운다",
   );
   assert.throws(() => conjugatePredicate("모르다", "present"));
+});
+
+test("합성 시퀀스를 단어당 한 개로 비교하고 결과를 순서대로 누적해 구절 생성", async () => {
+  const entries = [love, learn].map((word, i) => {
+    const definition = { ...sign, ...word };
+    const original = sample({ sample_id: crypto.randomUUID(), ...word });
+    original.frames.forEach((frame) => {
+      frame.hands = [hand(i ? "Right" : "Left", i ? 0.7 : 0.2)];
+      frame.detected_hand_count = 1;
+    });
+    return { definition, original };
+  });
+  const gallery = prepareGallery(
+    {
+      signs: entries.map((x) => x.definition),
+      samples: entries.map((x) => x.original),
+    },
+    "KSL",
+  );
+  const accumulated = new SentenceWords();
+  for (const { original } of entries) {
+    const result = await compareSequence(gallery, original);
+    assert.equal(result.top.sign_id, original.sign_id);
+    accumulated.add(result.top, "recognized", result.uncertain);
+  }
+  assert.deepEqual(
+    accumulated.words.map((item) => item.label),
+    ["사랑", "배우다"],
+  );
+  assert.equal(makeKoreanPhrase(accumulated.words).text, "사랑을 배우다");
 });

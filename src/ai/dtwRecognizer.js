@@ -144,11 +144,19 @@ export function prepareGallery(dataset, language) {
   };
 }
 
-export async function loadGallery(repository, language, { signal } = {}) {
+export async function loadGallery(
+  repository,
+  language,
+  { signal, onProgress = () => {} } = {},
+) {
   if (!repository)
     throw new Error(
       "공용 데이터 연결 설정이 없습니다. 학습시키기 화면에서 연결 상태를 확인하세요.",
     );
+  // Read small metadata pages first, then fetch active sequences in bounded
+  // batches. Full sequence pages can exceed the server statement timeout.
+  if (typeof repository.getActive === "function")
+    return loadGalleryConcurrent(repository, language, signal, onProgress);
   let samples = [];
   const rejected = [],
     seen = new Set(),
@@ -214,6 +222,99 @@ export async function loadGallery(repository, language, { signal } = {}) {
     samples,
     rejected,
     wordCount: new Set(samples.map((s) => s.sign.sign_id)).size,
+  };
+}
+
+async function listActiveIds(repository, language, signal) {
+  const ids = [],
+    seen = new Set();
+  let afterId = null;
+  while (true) {
+    abort(signal);
+    const { rows, nextCursor } = await repository.page(
+      { language },
+      { afterId, limit: 100 },
+    );
+    abort(signal);
+    if (!rows.length) break;
+    for (const row of rows) {
+      if (seen.has(row.id))
+        throw new Error("공용 데이터 페이지가 중복됩니다. 새로고침하세요.");
+      seen.add(row.id);
+      ids.push(row.id);
+    }
+    if (!nextCursor || nextCursor === afterId)
+      throw new Error("공용 데이터 페이지 진행 오류");
+    afterId = nextCursor;
+  }
+  return ids;
+}
+
+async function loadGalleryConcurrent(repository, language, signal, onProgress) {
+  const ids = await listActiveIds(repository, language, signal);
+  onProgress(0, ids.length);
+  let samples = [];
+  const rejected = [],
+    signs = new Map(),
+    conflicts = new Set();
+  for (let offset = 0; offset < ids.length; offset += 3) {
+    abort(signal);
+    const batch = ids.slice(offset, offset + 3);
+    const rows = await Promise.all(
+      batch.map((id) => repository.getActive(id, language)),
+    );
+    abort(signal);
+    for (const [index, row] of rows.entries()) {
+      if (!row || row.id !== batch[index])
+        throw new Error(
+          "조회 중 공용 자료가 변경되었습니다. 새로고침해 주세요.",
+        );
+      try {
+        const { sample, sign } = fromRow(row),
+          old = signs.get(sign.sign_id);
+        if (
+          old &&
+          ["label", "concept_id", "source", "correspondence_verified"].some(
+            (key) => old[key] !== sign[key],
+          )
+        ) {
+          conflicts.add(sign.sign_id);
+          const removed = samples.filter(
+            (item) => item.sign.sign_id === sign.sign_id,
+          );
+          rejected.push(
+            ...removed.map((item) => ({
+              id: item.id,
+              reason: "단어 정보 충돌",
+            })),
+          );
+          samples = samples.filter(
+            (item) => item.sign.sign_id !== sign.sign_id,
+          );
+        }
+        signs.set(sign.sign_id, sign);
+        if (conflicts.has(sign.sign_id)) throw new Error("단어 정보 충돌");
+        const prepared = prepareGallery(
+          { signs: [sign], samples: [sample] },
+          language,
+        );
+        samples.push(...prepared.samples);
+        rejected.push(...prepared.rejected);
+      } catch (error) {
+        rejected.push({ id: row.id, reason: error.message });
+      }
+    }
+    onProgress(Math.min(offset + batch.length, ids.length), ids.length);
+    await pause();
+  }
+  const finalIds = await listActiveIds(repository, language, signal);
+  if (ids.length !== finalIds.length || ids.some((id, i) => id !== finalIds[i]))
+    throw new Error("조회 중 공용 자료가 변경되었습니다. 새로고침해 주세요.");
+  return {
+    language,
+    samples,
+    rejected,
+    wordCount: new Set(samples.map((item) => item.sign.sign_id)).size,
   };
 }
 

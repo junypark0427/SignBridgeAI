@@ -251,6 +251,16 @@ export class SampleRepository {
     fromRow(data);
     return data;
   }
+  async getActive(id, language) {
+    if (!UUID.test(id) || !["KSL", "ASL"].includes(language))
+      throw new Error("공용 샘플 식별자 또는 언어가 올바르지 않습니다.");
+    await this.ready();
+    const { data, error } = await this.query({ language }, "*")
+      .eq("id", id)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
   async signCatalog(language) {
     await this.ready();
     const signs = new Map();

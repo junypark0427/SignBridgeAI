@@ -157,3 +157,54 @@ test("uncertain matches still return candidates and the criterion can be adjuste
   });
   assert.equal(permissive.uncertain, false);
 });
+
+test("bounded parallel loading preserves all samples and rejects concurrent changes", async () => {
+  const examples = Array.from({ length: 5 }, () => moving());
+  const rows = examples
+    .map((s) => toRow(s, sign))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  let inflight = 0,
+    peak = 0,
+    scans = 0,
+    changed = false,
+    disappear = false;
+  const repository = {
+    async page(_filters, { afterId }) {
+      if (!afterId) scans++;
+      const visible = changed && scans >= 2 ? rows.slice(0, -1) : rows;
+      const found = visible.filter((row) => !afterId || row.id > afterId);
+      return { rows: found, nextCursor: found.at(-1)?.id ?? null };
+    },
+    async getActive(id) {
+      inflight++;
+      peak = Math.max(peak, inflight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inflight--;
+      return disappear && id === rows[0].id
+        ? null
+        : rows.find((row) => row.id === id);
+    },
+  };
+  const progress = [];
+  const gallery = await loadGallery(repository, "KSL", {
+    onProgress: (done, total) => progress.push([done, total]),
+  });
+  assert.equal(gallery.samples.length, 5);
+  assert.ok(peak > 1 && peak <= 3);
+  assert.deepEqual(progress, [
+    [0, 5],
+    [3, 5],
+    [5, 5],
+  ]);
+  assert.deepEqual(
+    gallery.samples.map((item) => item.id),
+    rows.map((row) => row.id),
+  );
+  scans = 0;
+  changed = true;
+  await assert.rejects(loadGallery(repository, "KSL"), /변경/);
+  scans = 0;
+  changed = false;
+  disappear = true;
+  await assert.rejects(loadGallery(repository, "KSL"), /변경/);
+});

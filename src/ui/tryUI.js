@@ -120,6 +120,10 @@ export class TryUI {
     this.loading = true;
     this.gallery = null;
     this.sentence?.setGallery(null);
+    $("try-data-words").replaceChildren();
+    $("try-data-notice").textContent =
+      "선택한 수어의 공용 데이터를 확인하고 있습니다.";
+    $("try-register").hidden = true;
     this.clearResult();
     this.toggle();
     $("try-data-status").textContent = "공용 데이터 불러오는 중…";
@@ -127,7 +131,14 @@ export class TryUI {
       const gallery = await loadGallery(
         this.repository,
         $("try-language").value,
-        { signal: controller.signal },
+        {
+          signal: controller.signal,
+          onProgress: (done, total) => {
+            if (generation === this.loadGeneration)
+              $("try-data-status").textContent =
+                `공용 데이터 준비 중 · ${done} / ${total}개`;
+          },
+        },
       );
       if (generation !== this.loadGeneration) return false;
       this.gallery = gallery;
