@@ -35,6 +35,9 @@ export function comparisonSequence(raw, options = {}) {
     quality.warnings.push(
       "유효 프레임이 10개 미만이라 움직임 비교가 제한적입니다.",
     );
+  // The raw capture stays in the database; only compact features and metrics
+  // are retained in the gallery, not another complete clone of every sequence.
+  quality.sample = null;
   return { vectors, quality };
 }
 
@@ -146,9 +149,11 @@ export async function loadGallery(repository, language, { signal } = {}) {
     throw new Error(
       "공용 데이터 연결 설정이 없습니다. 학습시키기 화면에서 연결 상태를 확인하세요.",
     );
-  const dataset = { signs: [], samples: [] },
-    rejected = [],
-    seen = new Set();
+  let samples = [];
+  const rejected = [],
+    seen = new Set(),
+    signs = new Map(),
+    conflicts = new Set();
   let afterId = null;
   // Full cursor pagination, no silent 1000-row truncation. Validate each sample
   // separately so one damaged public row cannot disable the entire experience.
@@ -156,7 +161,7 @@ export async function loadGallery(repository, language, { signal } = {}) {
     abort(signal);
     const { rows, nextCursor } = await repository.page(
       { language },
-      { afterId, limit: 25, full: true },
+      { afterId, limit: 1, full: true },
     );
     abort(signal);
     if (!rows.length) break;
@@ -166,8 +171,35 @@ export async function loadGallery(repository, language, { signal } = {}) {
       seen.add(row.id);
       try {
         const { sample, sign } = fromRow(row);
-        dataset.samples.push(sample);
-        dataset.signs.push(sign);
+        const old = signs.get(sign.sign_id);
+        if (
+          old &&
+          ["label", "concept_id", "source", "correspondence_verified"].some(
+            (key) => old[key] !== sign[key],
+          )
+        ) {
+          conflicts.add(sign.sign_id);
+          const removed = samples.filter(
+            (item) => item.sign.sign_id === sign.sign_id,
+          );
+          rejected.push(
+            ...removed.map((item) => ({
+              id: item.id,
+              reason: "단어 정보 충돌",
+            })),
+          );
+          samples = samples.filter(
+            (item) => item.sign.sign_id !== sign.sign_id,
+          );
+        }
+        signs.set(sign.sign_id, sign);
+        if (conflicts.has(sign.sign_id)) throw new Error("단어 정보 충돌");
+        const prepared = prepareGallery(
+          { signs: [sign], samples: [sample] },
+          language,
+        );
+        samples.push(...prepared.samples);
+        rejected.push(...prepared.rejected);
       } catch (error) {
         rejected.push({ id: row.id, reason: error.message });
       }
@@ -177,9 +209,12 @@ export async function loadGallery(repository, language, { signal } = {}) {
     afterId = nextCursor;
     await pause();
   }
-  const gallery = prepareGallery(dataset, language);
-  gallery.rejected.push(...rejected);
-  return gallery;
+  return {
+    language,
+    samples,
+    rejected,
+    wordCount: new Set(samples.map((s) => s.sign.sign_id)).size,
+  };
 }
 
 export async function compareSequence(

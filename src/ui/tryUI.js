@@ -2,6 +2,7 @@ import { escapeHTML, drawHands } from "./collectorUI.js";
 import { CameraManager } from "../camera/cameraManager.js";
 import { HandTracker } from "../mediapipe/handTracker.js";
 import { WordCollector } from "../collector/wordCollector.js";
+import { SentenceUI } from "./sentenceUI.js";
 import {
   loadGallery,
   compareSequence,
@@ -24,6 +25,14 @@ export class TryUI {
     this.camera = new CameraManager($("try-video"), () =>
       this.stop("카메라 연결이 끊어졌습니다."),
     );
+    this.sentence = new SentenceUI({
+      onMode: (mode) => {
+        this.stop("인식 모드를 변경했습니다. 카메라를 다시 시작하세요.");
+        if (mode === "sentence") $("try-language").value = "KSL";
+        this.clearResult();
+        this.load();
+      },
+    });
     $("try-language").onchange = () => {
       this.stop();
       this.clearResult();
@@ -59,6 +68,7 @@ export class TryUI {
     $("try-message").textContent = text;
   }
   clearResult() {
+    this.sentence?.clearCandidate();
     $("try-result").textContent =
       "카메라를 시작하고 단어 하나를 수행하면 비교 결과가 표시됩니다.";
   }
@@ -67,6 +77,9 @@ export class TryUI {
       busy = this.loading || this.predicting || this.cameraBusy;
     for (const id of ["try-language", "try-refresh", "try-distance"])
       $(id).disabled = busy || recording;
+    $("try-language").disabled ||= this.sentence?.mode === "sentence";
+    for (const id of ["mode-word", "mode-sentence"])
+      $(id).disabled = this.cameraBusy || this.predicting || recording;
     $("try-camera").disabled = this.cameraBusy || this.predicting;
     $("try-camera").textContent = this.cameraRunning
       ? "카메라 종료"
@@ -77,6 +90,7 @@ export class TryUI {
   }
   renderGallery() {
     const g = this.gallery;
+    this.sentence.setGallery(g);
     $("try-data-status").textContent =
       `${g.language} · ${g.wordCount}단어 · 비교 샘플 ${g.samples.length}개 · ${new Date().toLocaleTimeString("ko-KR")} 조회`;
     $("try-data-words").innerHTML = [
@@ -105,6 +119,7 @@ export class TryUI {
       generation = ++this.loadGeneration;
     this.loading = true;
     this.gallery = null;
+    this.sentence?.setGallery(null);
     this.clearResult();
     this.toggle();
     $("try-data-status").textContent = "공용 데이터 불러오는 중…";
@@ -266,6 +281,7 @@ export class TryUI {
         "대응 자료를 조회하지 못했습니다. 다시 시도하세요.";
     }
     if (generation !== this.generation) return;
+    if (this.sentence.mode === "sentence") this.sentence.setCandidate(result);
     $("try-result").innerHTML =
       `<p class="result-state">${result.uncertain ? "인식이 불확실합니다 · 가장 가까운 후보" : "가장 유사한 단어 후보"}</p><div class="prediction-heading">${escapeHTML(top.label)}</div><p>${escapeHTML(top.language)} · 비교 점수 ${(top.similarity * 100).toFixed(1)} / 100</p><p class="cloud-notice">유사도 점수는 검증된 정확도나 확률이 아닙니다. ${result.single_candidate ? "후보가 하나뿐이므로 해당 단어와의 닮은 정도만 표시합니다." : ""}</p><div class="prediction-gloss"><span>한국어 <strong>${escapeHTML(top.language === "KSL" ? top.label : "의미 미등록")}</strong></span><span>English <strong>${escapeHTML(top.language === "ASL" ? top.label : "meaning not registered")}</strong></span></div><p>공통 의미 코드 · ${escapeHTML(top.concept_id)}</p><h3>상위 비교 후보</h3>${result.candidates.map((c) => `<div class="candidate"><span>${escapeHTML(c.label)}<small>${c.sample_count}개 샘플</small></span><meter min="0" max="1" value="${c.similarity}"></meter><strong>${(c.similarity * 100).toFixed(1)}</strong></div>`).join("")}<p>총 ${result.sample_count}개 샘플 · ${result.word_count}개 단어 비교</p><h3>검증된 ${other} 대응 표현</h3>${counterparts.map((sign) => `<p>${escapeHTML(sign.label)}<small>${escapeHTML(sign.source)}</small></p>`).join("") || `<p>${correspondenceMessage}</p>`}`;
     const ko = top.language === "KSL" ? top.label : counterparts[0]?.label;
