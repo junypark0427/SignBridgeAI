@@ -1,5 +1,6 @@
-import { sequenceInput } from "./sequenceInput.js";
+import { sequenceInput, LEGACY_INPUT_VERSION } from "./sequenceInput.js";
 import { qualityOf, validateSample } from "../shared/dataSchema.js";
+import { analyseTrainingSample } from "../shared/trainingQuality.js";
 import {
   tensorflow,
   validateMetadata,
@@ -8,20 +9,31 @@ import {
 export async function predictSequence(model, metadata, sample) {
   validateMetadata(metadata, sample.language);
   validateModelShape(model, metadata);
-  const errors = validateSample(sample),
-    quality = qualityOf(sample);
-  if (
-    errors.length ||
-    quality.missing_ratio > 0.3 ||
-    sample.sequence_length < 10 ||
-    sample.duration_ms < 500
-  )
-    throw new Error(
-      "손이 충분히 감지된 0.5초 이상의 단어 시퀀스를 촬영하세요. 미감지 비율은 30% 이하여야 합니다.",
-    );
+  const errors = validateSample(sample);
+  if (errors.length) throw new Error(errors.slice(0, 3).join(" "));
+  let inputSample = sample,
+    qualityWarnings = [];
+  if (metadata.input_version === LEGACY_INPUT_VERSION) {
+    if (
+      qualityOf(sample).missing_ratio > 0.3 ||
+      sample.sequence_length < 10 ||
+      sample.duration_ms < 500
+    )
+      throw new Error(
+        "이전 규격 모델은 원본 미감지 30% 이하·10프레임·0.5초 이상의 입력이 필요합니다.",
+      );
+  } else {
+    const analysis = analyseTrainingSample(sample, {
+      expectedHands: 1,
+      interpolateShortGaps: metadata.processing.interpolate_short_gaps,
+    });
+    if (!analysis.eligible) throw new Error(analysis.errors.join(" "));
+    inputSample = analysis.sample;
+    qualityWarnings = [...analysis.warnings];
+  }
   const tf = await tensorflow();
   const probabilities = tf.tidy(() =>
-    model.predict(tf.tensor3d([sequenceInput(sample)])),
+    model.predict(tf.tensor3d([sequenceInput(inputSample)])),
   );
   try {
     const scores = Array.from(await probabilities.data());
@@ -38,15 +50,28 @@ export async function predictSequence(model, metadata, sample) {
     const candidates = metadata.classes
       .map((sign, i) => ({ ...sign, confidence: scores[i] }))
       .sort((a, b) => b.confidence - a.confidence);
-    const unknown =
+    let unknown =
       candidates[0].confidence < metadata.confidence_threshold ||
       candidates[0].confidence - candidates[1].confidence <
         metadata.margin_threshold;
+    if (metadata.input_version !== LEGACY_INPUT_VERSION) {
+      const required = analyseTrainingSample(sample, {
+        expectedHands: candidates[0].expected_hands,
+        interpolateShortGaps: metadata.processing.interpolate_short_gaps,
+      });
+      if (!required.eligible) {
+        unknown = true;
+        qualityWarnings.push(
+          "상위 후보에 필요한 실제 손 프레임이 부족합니다. 필요한 손을 모두 보여 주세요.",
+        );
+      }
+    }
     return {
       unknown,
       top: unknown ? null : candidates[0],
       candidates: candidates.slice(0, 3),
       model_version: metadata.model_version,
+      quality_warnings: qualityWarnings,
     };
   } finally {
     probabilities.dispose();

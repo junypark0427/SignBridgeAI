@@ -30,11 +30,58 @@ databaseStatus(cloudConfig.message);
 const cloudUI = new DatasetUI({
   repository,
   message: databaseStatus,
-  onReview: (sample) => openReview(sample, false),
+  onReview: (sample, context) => openReview(sample, false, context),
   onImport: async (incoming) => {
     await store.merge(incoming);
     await refresh();
     queueSync();
+  },
+  onArchive: async ({ id, archived }) => {
+    if (reviewSample?.sample_id === id) closeReview();
+    if (archived && storageReady) {
+      try {
+        await store.deleteSample(id);
+        await refresh();
+      } catch (error) {
+        showError(
+          new Error(
+            `공용 휴지통 이동은 완료됐지만 이 기기 사본 제거에 실패했습니다. ${error.message}`,
+          ),
+        );
+        return;
+      }
+    }
+    ui.status(
+      archived
+        ? "공용 휴지통으로 옮겼습니다. 원본은 보존되며 휴지통에서 복원할 수 있습니다."
+        : "공용 목록으로 복원했습니다. 필요한 경우 로컬로 다시 가져오세요.",
+    );
+  },
+  onDelete: async ({ id }) => {
+    if (reviewSample?.sample_id === id) closeReview();
+    // Server confirmation comes first. Persist a local tombstone even if cache cleanup fails.
+    try {
+      if (sync)
+        await sync.set(id, {
+          state: "deleted",
+          deleted_at: new Date().toISOString(),
+        });
+      if (storageReady) {
+        await store.deleteSample(id);
+        await refresh();
+      }
+    } catch (error) {
+      ui.status(
+        `공용 서버의 실제 삭제는 완료됐지만 이 기기 사본 정리에 실패했습니다. 이 기기 목록을 확인하세요. ${error.message}`,
+        true,
+      );
+      return;
+    } finally {
+      window.dispatchEvent(new Event("signbridge:data-changed"));
+    }
+    ui.status(
+      "공용 샘플을 Supabase에서 영구 삭제했습니다. Try AI에서도 제외됩니다.",
+    );
   },
 });
 let sync;
@@ -55,6 +102,7 @@ let animationId,
   countdownActive = false,
   pending,
   reviewSample,
+  reviewContext,
   playbackId,
   playbackStart;
 let fpsStart = 0,
@@ -142,7 +190,10 @@ function queueSync() {
   if (sync)
     sync
       .run()
-      .then(() => cloudUI.refresh())
+      .then(() => {
+        window.dispatchEvent(new Event("signbridge:data-changed"));
+        return cloudUI.refresh();
+      })
       .catch((error) => {
         databaseStatus("클라우드 동기화 오류 · 로컬 보존");
         showError(error);
@@ -335,16 +386,18 @@ function stopPlayback() {
   playbackId = null;
   $("review-play").textContent = "▶ 재생";
 }
-function openReview(sample, isPending) {
+function openReview(sample, isPending, context = { scope: "local" }) {
   stopPlayback();
   reviewSample = sample;
-  ui.showReview(sample, isPending);
+  reviewContext = context;
+  ui.showReview(sample, isPending, context);
   showFrame(0);
 }
 function closeReview() {
   stopPlayback();
   $("review-dialog").close();
   reviewSample = null;
+  reviewContext = null;
   controls();
 }
 function discardReview() {
@@ -584,6 +637,14 @@ $("review-save").onclick = saveReview;
 $("review-discard").onclick = discardReview;
 $("review-close").onclick = discardReview;
 $("review-done").onclick = closeReview;
+$("review-local-delete").onclick = () => {
+  const id = reviewSample?.sample_id;
+  closeReview();
+  if (id) removeSample(id);
+};
+$("review-cloud-archive").onclick = () => {
+  if (reviewContext?.scope === "cloud") cloudUI.changeDelete(reviewContext.id);
+};
 $("review-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   if (!dataBusy) discardReview();

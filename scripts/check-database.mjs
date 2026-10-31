@@ -88,8 +88,6 @@ const update = await client
   .update({ label: "must not change" })
   .eq("id", rows[0].id);
 assert.equal(update.error?.code, "42501");
-const remove = await client.from("sign_samples").delete().eq("id", rows[0].id);
-assert.equal(remove.error?.code, "42501");
 const verify = await client
   .from("sign_samples")
   .select("id,label")
@@ -99,6 +97,20 @@ const verify = await client
   );
 assert.equal(verify.data?.length, 2);
 assert.ok(verify.data.every((r) => r.label === rows[0].label));
+// Delete only the two synthetic rows created by this invocation.
+for (const row of rows) {
+  const remove = await client
+    .from("sign_samples")
+    .delete()
+    .eq("id", row.id)
+    .eq("is_test", true)
+    .select("id");
+  if (remove.error) throw remove.error;
+  assert.deepEqual(remove.data, [{ id: row.id }]);
+  const retry = await client.from("sign_samples").insert(row);
+  assert.equal(retry.error?.code, "23514");
+  assert.match(retry.error.message, /SB_SAMPLE_DELETED/);
+}
 console.log(
   JSON.stringify(
     {
@@ -108,7 +120,8 @@ console.log(
       duplicate: "rejected",
       invalid: "rejected",
       anonymous_update: "denied",
-      anonymous_delete: "denied",
+      anonymous_delete: "passed (own synthetic rows only)",
+      reupload_deleted_uuid: "blocked",
       ids: rows.map((r) => r.id),
     },
     null,

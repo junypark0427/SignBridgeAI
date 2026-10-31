@@ -54,6 +54,10 @@ export async function sampleFingerprint(sample, sign) {
   ).join("");
 }
 export function toRow(sample, sign, { isTest = false } = {}) {
+  if (sample?.training_derivation)
+    throw new Error(
+      "학습용 트림·보정 사본은 원본 데이터로 업로드할 수 없습니다.",
+    );
   const errors = validateDataset({
     schema_version: SCHEMA_VERSION,
     signs: [sign],
@@ -149,17 +153,39 @@ const METADATA =
 export class SampleRepository {
   constructor(client) {
     this.client = client;
+    this.archiveSupported = false;
+    this.readyPromise = null;
+  }
+  async ready() {
+    this.readyPromise ??= (async () => {
+      const { error } = await this.client
+        .from("sign_samples")
+        .select("archived")
+        .limit(0);
+      if (error && !["42703", "PGRST204"].includes(error.code)) throw error;
+      this.archiveSupported = !error;
+    })().catch((error) => {
+      this.readyPromise = null;
+      throw error;
+    });
+    await this.readyPromise;
   }
   query(filters = {}, columns = METADATA, options) {
     let query = this.client
       .from("sign_samples")
       .select(columns, options)
       .eq("is_test", false);
+    if (this.archiveSupported)
+      query = query.eq(
+        "archived",
+        filters.archived === true || filters.archived === "true",
+      );
     for (const key of ["language", "sign_id", "signer_id", "session_id"])
       if (filters[key]) query = query.eq(key, filters[key]);
     return query;
   }
   async count(filters = {}) {
+    await this.ready();
     const { count, error } = await this.query(filters, "id", {
       count: "exact",
       head: true,
@@ -197,9 +223,13 @@ export class SampleRepository {
     return { duplicate: true };
   }
   async page(filters, { afterId = null, limit = 25, full = false } = {}) {
+    await this.ready();
     if (!Number.isInteger(limit) || limit < 1 || limit > 100)
       throw new Error("페이지 크기는 1~100이어야 합니다.");
-    let query = this.query(filters, full ? "*" : METADATA)
+    let query = this.query(
+      filters,
+      full ? "*" : METADATA + (this.archiveSupported ? ",archived" : ""),
+    )
       .order("id", { ascending: true })
       .limit(limit);
     if (afterId) query = query.gt("id", afterId);
@@ -222,6 +252,7 @@ export class SampleRepository {
     return data;
   }
   async signCatalog(language) {
+    await this.ready();
     const signs = new Map();
     let cursor = null;
     while (true) {
@@ -248,6 +279,94 @@ export class SampleRepository {
       cursor = next;
     }
     return [...signs.values()];
+  }
+  async setArchived(id, archived) {
+    if (!UUID.test(id) || typeof archived !== "boolean")
+      throw new Error("공용 데이터 ID·삭제 상태가 올바르지 않습니다.");
+    await this.ready();
+    if (!this.archiveSupported)
+      throw new Error(
+        "공용 휴지통 설정이 아직 적용되지 않았습니다. DB 설정 문서를 확인하세요.",
+      );
+    const { data, error } = await this.client
+      .from("sign_samples")
+      .update({ archived })
+      .eq("id", id)
+      .eq("is_test", false)
+      .select("id,archived")
+      .single();
+    if (error) throw error;
+    if (data?.id !== id || data.archived !== archived)
+      throw new Error(
+        "서버의 삭제·복원 결과를 확인하지 못했습니다. 완료로 표시하지 않았습니다.",
+      );
+    return data;
+  }
+  async deletedIds(ids) {
+    const deleted = new Set();
+    const valid = [...new Set(ids.filter((id) => UUID.test(id)))];
+    for (let offset = 0; offset < valid.length; offset += 100) {
+      const { data, error } = await this.client
+        .from("sign_sample_deletions")
+        .select("id")
+        .in("id", valid.slice(offset, offset + 100));
+      // The old collector keeps working until the new migration is applied.
+      if (error && ["42P01", "PGRST205"].includes(error.code)) return deleted;
+      if (error) throw error;
+      for (const row of data) deleted.add(row.id);
+    }
+    return deleted;
+  }
+  async deleteSample(id) {
+    if (!UUID.test(id))
+      throw new Error("삭제할 샘플 UUID가 올바르지 않습니다.");
+    const { data, error } = await this.client
+      .from("sign_samples")
+      .delete()
+      .eq("id", id)
+      .eq("is_test", false)
+      .select("id");
+    if (error) throw error;
+    if (data?.some((row) => row.id !== id))
+      throw new Error("삭제 응답의 ID가 다릅니다. 목록을 새로고침하세요.");
+    const { data: remaining, error: readError } = await this.client
+      .from("sign_samples")
+      .select("id")
+      .eq("id", id);
+    if (readError) throw readError;
+    const deleted = await this.deletedIds([id]);
+    if (remaining?.length || !deleted.has(id))
+      throw new Error(
+        "서버에서 실제 삭제를 확인하지 못했습니다. 삭제 권한·DB 마이그레이션을 확인하세요.",
+      );
+    return { id, deleted: true };
+  }
+  async summary() {
+    const [total, ksl, asl] = await Promise.all([
+      this.count(),
+      this.count({ language: "KSL" }),
+      this.count({ language: "ASL" }),
+    ]);
+    const words = new Map();
+    let afterId = null;
+    while (true) {
+      const result = await this.page({}, { afterId, limit: 100 });
+      if (!result.rows.length) break;
+      for (const row of result.rows) {
+        const key = `${row.language}:${row.sign_id}`;
+        const word = words.get(key) ?? {
+          language: row.language,
+          label: row.label,
+          count: 0,
+        };
+        word.count++;
+        words.set(key, word);
+      }
+      if (!result.nextCursor || afterId === result.nextCursor)
+        throw new Error("수량 조회 페이지 오류");
+      afterId = result.nextCursor;
+    }
+    return { total, ksl, asl, words: [...words.values()] };
   }
   async exportAll(filters, onProgress = () => {}) {
     const before = await this.count(filters),

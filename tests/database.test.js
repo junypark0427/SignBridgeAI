@@ -40,6 +40,72 @@ test("shared default includes both languages while excluding synthetic tests; op
   ]);
 });
 
+test("archive filter excludes trash from normal reads and permits explicit trash browsing", () => {
+  const applied = [];
+  const query = {
+    eq(key, value) {
+      applied.push([key, value]);
+      return this;
+    },
+  };
+  const repo = new SampleRepository({
+    from() {
+      return {
+        select() {
+          return query;
+        },
+      };
+    },
+  });
+  repo.archiveSupported = true;
+  repo.query();
+  assert.deepEqual(applied, [
+    ["is_test", false],
+    ["archived", false],
+  ]);
+  applied.length = 0;
+  repo.query({ archived: true });
+  assert.deepEqual(applied, [
+    ["is_test", false],
+    ["archived", true],
+  ]);
+});
+
+test("archive/restore changes only the archive column and requires matching server confirmation", async () => {
+  const id = crypto.randomUUID();
+  let response = { id, archived: true },
+    error = null,
+    written;
+  const repo = new SampleRepository({
+    from() {
+      return {
+        update(value) {
+          written = value;
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        select() {
+          return this;
+        },
+        single: async () => ({ data: response, error }),
+      };
+    },
+  });
+  repo.ready = async () => {
+    repo.archiveSupported = true;
+  };
+  await repo.setArchived(id, true);
+  assert.deepEqual(written, { archived: true });
+  response = { id, archived: false };
+  await repo.setArchived(id, false);
+  assert.deepEqual(written, { archived: false });
+  await assert.rejects(repo.setArchived(id, true), /확인하지/);
+  error = new Error("permission denied");
+  await assert.rejects(repo.setArchived(id, false), /permission/);
+});
+
 test("cloud mapping round trip includes raw timing, capture, sign sources and only allowed fields", () => {
   const s = validSample();
   s.private_note = "never upload";

@@ -1,4 +1,5 @@
 import { qualityOf } from "../shared/dataSchema.js";
+import { analyseTrainingSample } from "../shared/trainingQuality.js";
 import { CONNECTIONS } from "../mediapipe/handTracker.js";
 
 export const escapeHTML = (value) =>
@@ -95,7 +96,7 @@ export function mountUI() {
         <div class="data-table-card"><div class="table-toolbar"><h3>시퀀스 라이브러리 <span id="table-count">0</span></h3><div><label class="sr-only" for="filter-sign">단어 필터</label><select id="filter-sign"><option value="">모든 단어</option></select><button id="delete-last" class="text-button muted" disabled>마지막 수집 삭제</button></div></div><div class="table-scroll"><table><thead><tr><th>단어 / 의미 코드</th><th>촬영자 / 세션</th><th>촬영 일시</th><th>길이 / 프레임</th><th>미감지 / 양손</th><th>품질</th><th><span class="sr-only">작업</span></th></tr></thead><tbody id="sample-rows"></tbody></table></div><div id="empty-state" class="empty-state"><span>${icon("hand")}</span><h3>첫 번째 움직임을 기록해 보세요</h3><p>단어를 등록하고 녹화하면 시퀀스가 이곳에 쌓입니다.</p></div></div>
         <details class="distribution"><summary>단어별 · 촬영자별 수집 현황</summary><div id="distribution-content"></div></details><p class="split-tip">학습·테스트 데이터는 촬영자 또는 세션 단위로 분리하세요. 테스트에는 학습에 참여하지 않은 촬영자의 동작을 권장합니다.</p>
       </section>
-      <div id="status-message" class="status-message" role="status" aria-live="polite">준비 중입니다.</div><footer><span>${icon("shield")} 영상은 전송하지 않습니다. 저장한 관절 시퀀스·익명 ID는 설정된 Supabase에 공유됩니다.</span><span>SignBridge AI <b>·</b> Word-level studio v0.2.1</span></footer>
+      <div id="status-message" class="status-message" role="status" aria-live="polite">준비 중입니다.</div><footer><span>${icon("shield")} 영상은 전송하지 않습니다. 저장한 관절 시퀀스·익명 ID는 설정된 Supabase에 공유됩니다.</span><span>SignBridge AI <b>·</b> Word-level studio v0.4.0</span></footer>
     </main>
     <dialog id="sign-dialog"><form id="sign-form"><div class="dialog-heading"><div><p class="eyebrow">NEW SIGN</p><h2>학습할 단어 등록</h2></div><button type="button" class="icon-button" data-close="sign-dialog" aria-label="닫기">×</button></div><p class="dialog-note">등록한 언어·단어 정보는 샘플과 함께 보존됩니다. 같은 의미 코드가 완전한 수어 대응 관계를 보장하지는 않습니다.</p><div class="two-fields"><div><label for="sign-language">수어 종류</label><select id="sign-language" name="language"><option>KSL</option><option>ASL</option></select></div><div><label for="sign-label">단어 이름</label><input id="sign-label" name="label" required maxlength="120" placeholder="검증한 수어 단어"></div></div><label for="sign-concept">공통 의미 코드</label><input id="sign-concept" name="concept_id" required maxlength="150" placeholder="예: concept.greeting.hello"><label for="sign-unique-id">수어 표현 고유 ID</label><input id="sign-unique-id" name="sign_id" required maxlength="150"><label for="sign-description">설명 <span class="optional">선택</span></label><textarea id="sign-description" name="description" maxlength="3000" rows="2" placeholder="의미, 표현 변이, 동작 범위 등"></textarea><label for="sign-reference">참고 자료 출처 <span class="optional">선택</span></label><textarea id="sign-reference" name="source" maxlength="3000" rows="2" placeholder="검증된 수어 사전·영상의 URL 또는 서지 정보"></textarea><label class="checkbox-label"><input type="checkbox" name="correspondence_verified"> 출처를 바탕으로 다른 수어와의 의미 대응 관계를 검증했습니다.</label><p id="sign-form-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" data-close="sign-dialog">취소</button><button class="button primary" type="submit">단어 등록</button></div></form></dialog>
     <dialog id="review-dialog"><div class="dialog-heading"><div><p class="eyebrow">SEQUENCE REVIEW</p><h2>시퀀스 확인</h2></div><button id="review-close" class="icon-button" aria-label="시퀀스 검토 닫기">×</button></div><p class="dialog-note">손 관절 좌표만 재생합니다. 누락된 관절은 보간하지 않습니다.</p><div class="review-stage"><canvas id="review-canvas" width="640" height="360" aria-label="시퀀스 관절 재생"></canvas><span id="review-frame-label"></span></div><div class="review-controls"><button id="review-play" class="button secondary small">▶ 재생</button><label class="sr-only" for="review-frame">프레임 탐색</label><input id="review-frame" type="range" min="0" max="0" value="0"></div><div id="review-summary"></div><div id="review-warnings"></div><div class="dialog-actions"><button id="review-discard" class="button secondary">저장하지 않기</button><button id="review-save" class="button primary">이 시퀀스 저장</button><button id="review-done" class="button primary" hidden>닫기</button></div></dialog>`;
@@ -104,6 +105,17 @@ export function mountUI() {
 export class CollectorUI {
   constructor() {
     mountUI();
+    for (const [id, label] of [
+      ["review-local-delete", "이 기기에서 삭제"],
+      ["review-cloud-archive", "공용 데이터 삭제"],
+    ]) {
+      const button = document.createElement("button");
+      button.id = id;
+      button.className = "button danger";
+      button.textContent = label;
+      button.hidden = true;
+      this.$("review-done").before(button);
+    }
   }
   $(id) {
     return document.getElementById(id);
@@ -174,7 +186,7 @@ export class CollectorUI {
     this.$("sample-rows").innerHTML = filtered
       .map((s) => {
         const q = qualityOf(s);
-        return `<tr><td><strong>${escapeHTML(s.label)}</strong><code>${escapeHTML(s.concept_id)}</code></td><td>${escapeHTML(s.signer_id)}<small>${escapeHTML(s.session_id)}</small></td><td>${escapeHTML(new Date(s.start_timestamp).toLocaleString("ko-KR"))}</td><td>${(s.duration_ms / 1000).toFixed(2)}s<small>${s.sequence_length} 프레임</small></td><td>${q.missing_frames} 미감지<small>양손 ${q.two_hand_frames} 프레임</small></td><td><span class="quality ${!q.valid ? "invalid" : q.warnings.length ? "warning" : "good"}">${!q.valid ? "형식 오류" : q.warnings.length ? "검토 필요" : "양호"}</span></td><td class="row-actions"><button class="text-button" data-review="${escapeHTML(s.sample_id)}">검토</button><button class="text-button muted" data-delete="${escapeHTML(s.sample_id)}">삭제</button></td></tr>`;
+        return `<tr><td><strong>${escapeHTML(s.label)}</strong><code>${escapeHTML(s.concept_id)}</code></td><td>${escapeHTML(s.signer_id)}<small>${escapeHTML(s.session_id)}</small></td><td>${escapeHTML(new Date(s.start_timestamp).toLocaleString("ko-KR"))}</td><td>${(s.duration_ms / 1000).toFixed(2)}s<small>${s.sequence_length} 프레임</small></td><td>${q.missing_frames} 미감지<small>양손 ${q.two_hand_frames} 프레임</small></td><td><span class="quality ${!q.valid ? "invalid" : q.warnings.length ? "warning" : "good"}">${!q.valid ? "형식 오류" : q.warnings.length ? "품질 경고 (저장됨)" : "양호"}</span></td><td class="row-actions"><button class="text-button" data-review="${escapeHTML(s.sample_id)}">검토</button><button class="text-button muted" data-delete="${escapeHTML(s.sample_id)}">삭제</button></td></tr>`;
       })
       .join("");
     this.$("delete-last").disabled = !samples.length;
@@ -182,13 +194,29 @@ export class CollectorUI {
       `<div><h4>단어별 시퀀스</h4>${signs.length ? signs.map((s) => `<p>${escapeHTML(s.label)} <strong>${samples.filter((v) => v.sign_id === s.sign_id).length}개</strong></p>`).join("") : "<p>등록된 단어가 없습니다.</p>"}</div><div><h4>촬영자별 시퀀스</h4>${[...new Set(samples.map((s) => s.signer_id))].map((id) => `<p>${escapeHTML(id)} <strong>${samples.filter((s) => s.signer_id === id).length}개</strong></p>`).join("") || "<p>수집된 시퀀스가 없습니다.</p>"}</div>`;
     return sign;
   }
-  showReview(sample, pending) {
+  showReview(sample, pending, context = {}) {
     const q = qualityOf(sample);
+    const analysis = analyseTrainingSample(sample, { minValidFrames: 1 });
     this.$("review-summary").textContent =
       `${sample.label} · ${(sample.duration_ms / 1000).toFixed(2)}초 · ${sample.sequence_length}프레임 · 미감지 ${q.missing_frames} · 양손 ${q.two_hand_frames}`;
-    this.$("review-warnings").textContent =
-      q.warnings.join(" ") ||
-      "형식 검사 통과. 표현의 정확성은 담당자가 확인해 주세요.";
+    this.$("review-warnings").textContent = [
+      ...q.warnings,
+      analysis.trimmed
+        ? `학습용 자동 트림 예상: ${sample.sequence_length} → ${analysis.trimmed.frame_count}프레임, 미검출·손 부족 ${(analysis.original.missing_ratio * 100).toFixed(1)}% → ${(analysis.trimmed.missing_ratio * 100).toFixed(1)}%.`
+        : "학습용으로 사용할 손동작 구간이 없습니다.",
+      ...analysis.errors,
+      ...analysis.warnings,
+      `Try AI 비교: ${analysis.eligible ? "사용 가능" : "사용 불가"}. 품질 경고를 확인하고 저장하면 비교에 활용합니다. 원본은 보존하며 잘못된 자료는 나중에 삭제할 수 있습니다.`,
+    ].join(" ");
+    this.$("review-save").textContent = q.warnings.length
+      ? "경고를 확인하고 저장"
+      : "확인하고 저장";
+    this.$("review-done").textContent = "확인하고 닫기";
+    this.$("review-local-delete").hidden = pending || context.scope === "cloud";
+    this.$("review-cloud-archive").hidden =
+      pending || context.scope !== "cloud";
+    this.$("review-cloud-archive").disabled = false;
+    this.$("review-cloud-archive").textContent = "공용 데이터 삭제";
     this.$("review-warnings").className = q.warnings.length
       ? "review-warning"
       : "review-good";

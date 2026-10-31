@@ -4,7 +4,13 @@ import {
   LANGUAGES,
   validateSign,
 } from "../shared/dataSchema.js";
-import { TIME_STEPS, INPUT_SIZE, INPUT_VERSION } from "./sequenceInput.js";
+import {
+  TIME_STEPS,
+  INPUT_SIZE,
+  INPUT_VERSION,
+  LEGACY_INPUT_VERSION,
+} from "./sequenceInput.js";
+import { TRAINING_PROCESSING_VERSION } from "../shared/trainingQuality.js";
 import { downloadFile } from "../shared/download.js";
 let runtime;
 export async function tensorflow() {
@@ -21,13 +27,19 @@ export function validateMetadata(metadata, language) {
     metadata.language !== language ||
     metadata.schema_version !== SCHEMA_VERSION ||
     metadata.preprocessing_version !== PREPROCESSING_VERSION ||
-    metadata.input_version !== INPUT_VERSION ||
+    ![INPUT_VERSION, LEGACY_INPUT_VERSION].includes(metadata.input_version) ||
     metadata.time_steps !== TIME_STEPS ||
     metadata.feature_size !== INPUT_SIZE
   )
     throw new Error(
       "모델의 언어·스키마·전처리·입력 규격이 현재 프로그램과 다릅니다.",
     );
+  if (
+    metadata.input_version === INPUT_VERSION &&
+    (metadata.processing?.version !== TRAINING_PROCESSING_VERSION ||
+      typeof metadata.processing.interpolate_short_gaps !== "boolean")
+  )
+    throw new Error("모델의 트림·결측 처리 규격이 올바르지 않습니다.");
   if (
     !Array.isArray(metadata.classes) ||
     metadata.classes.length < 2 ||
@@ -37,6 +49,11 @@ export function validateMetadata(metadata, language) {
   )
     throw new Error("모델 단어 목록이 올바르지 않습니다.");
   for (const sign of metadata.classes) {
+    if (
+      metadata.input_version === INPUT_VERSION &&
+      !["auto", 1, 2].includes(sign.expected_hands)
+    )
+      throw new Error("모델의 단어별 손 수 설정이 올바르지 않습니다.");
     if (validateSign(sign).length || sign.language !== language)
       throw new Error("모델 단어 메타데이터가 올바르지 않습니다.");
     if (
@@ -93,6 +110,7 @@ export function makeMetadata(language, signs, allSigns, glosses, split) {
     schema_version: SCHEMA_VERSION,
     preprocessing_version: PREPROCESSING_VERSION,
     input_version: INPUT_VERSION,
+    processing: split.processing,
     time_steps: TIME_STEPS,
     feature_size: INPUT_SIZE,
     confidence_threshold: 0.75,

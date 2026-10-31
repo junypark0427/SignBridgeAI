@@ -8,6 +8,12 @@
 
 기존 Table Editor·RLS를 먼저 확인한 뒤 SQL Editor에서 `supabase/migrations/202610240001_sign_samples.sql` 전체를 실행합니다. 마지막 결과는 anon_select/anon_insert=true, anon_update/anon_delete=false여야 합니다. 다음 조회는 true여야 합니다.
 
+이후 `supabase/migrations/202610250001_sample_archive.sql`을 실행합니다. 기존 휴지통 호환을 위해 `archived` 열만 익명 UPDATE를 허용합니다. 원본 프레임·시간·라벨은 수정할 수 없습니다.
+
+마지막으로 **`supabase/migrations/202610310001_sample_delete.sql`**을 실행합니다. 2026-10-31 사용자 승인에 따라 anon DELETE와 `sb_anon_delete` RLS 정책을 추가합니다. 실제 프로젝트 적용 결과는 `delete_allowed=true`, `raw_update_allowed=false`입니다. 기존 실제 행을 지우는 SQL은 없습니다. 앞선 마이그레이션을 다시 실행하면 권한이 초기화되므로 세 파일을 날짜 순서로 모두 실행하세요.
+
+삭제 UUID·시각만 보관하는 `sign_sample_deletions`는 RLS SELECT만 공개하고 INSERT·UPDATE·DELETE를 부여하지 않습니다. `sb_guard_sample_deletion`은 고정 search_path의 SECURITY DEFINER 트리거로 DELETE 전 UUID를 기록하고 INSERT 전 과거 삭제 여부를 확인합니다. 같은 UUID에 트랜잭션 advisory lock을 사용해 지연 업로드와 삭제를 직렬화합니다. 함수 직접 실행 권한은 공개하지 않습니다. 이 표에는 원본 좌표·단어·촬영자·세션을 복사하지 않습니다.
+
 ```sql
 select relrowsecurity from pg_class where oid='public.sign_samples'::regclass;
 ```
@@ -32,14 +38,15 @@ select relrowsecurity from pg_class where oid='public.sign_samples'::regclass;
 | sign_metadata | JSONB, 설명·출처·대응 검증 표시 포함 |
 | uploaded_at | timestamptz default now(), 서버 저장 시각 |
 | is_test | boolean default false, 합성 DB 검증은 true |
+| archived | boolean default false, 공용 휴지통 여부. 원본은 보존 |
 
 프레임마다 요청하지 않고 시퀀스 하나를 한 행에 INSERT합니다. DB도 21개 유한 좌표, 좌우·손 수, 시간 순서/길이, 메타데이터를 검사합니다. frames는 최대 32MiB이며 원본 x/y를 clamp하지 않습니다. 언어+표현/촬영자/세션, 수집 시각 인덱스를 둡니다. 샘플이 없는 단어 등록은 로컬에만 존재합니다.
 
 ## 공개 정책
 
-RLS를 활성화하고 PUBLIC/anon/authenticated의 테이블·컬럼 권한을 제거한 뒤 anon에 SELECT·INSERT만 부여합니다. sb_anon_read는 SELECT using(true), sb_anon_insert는 INSERT with check(true)이며 형식은 CHECK로 제한합니다. UPDATE/DELETE/TRUNCATE·upsert는 허용하지 않습니다.
+최종 권한은 anon SELECT·INSERT·DELETE, archived 열 UPDATE입니다. sb_anon_read·sb_anon_delete는 using(true), sb_anon_insert는 with check(true)이며 INSERT 형식은 CHECK로 제한합니다. 다른 열 UPDATE·TRUNCATE·upsert는 허용하지 않습니다. 회원 인증은 추가하지 않습니다.
 
-로그인 없이 누구나 관절 데이터와 익명 ID를 읽고 추가할 수 있습니다. 키를 숨기는 접근 통제가 아닙니다. 실명·영상·민감 정보를 저장하지 않고 촬영 동의·공유 범위를 팀이 관리합니다. 사용자별 데이터 오염/과다 추가 차단은 없습니다. 공용 수정·영구 삭제는 소유자가 Dashboard에서 수행하며 브라우저 로컬 삭제와 별개입니다.
+로그인 없이 누구나 관절 데이터와 익명 ID를 조회·추가하고 **모든 공용 샘플을 영구 삭제할 수 있습니다**. 키를 숨기는 접근 통제가 아닙니다. 웹페이지의 삭제 확인창은 실수 방지 UI이며 API 권한을 제한하지 않습니다. 실명·영상·민감 정보를 저장하지 않고 촬영 동의·공유 범위를 팀이 관리합니다. 사용자별 데이터 오염/과다 추가 차단은 없습니다. 다른 기기에 이미 내려받은 사본을 원격 삭제할 수는 없지만 삭제 UUID 재업로드는 DB가 차단합니다.
 
 ## 동기화와 조회
 
@@ -49,6 +56,14 @@ IndexedDB 완료 → 프로젝트/UUID별 상태·내용 SHA-256 → INSERT → 
 
 ## 검사와 Netlify
 
-`npm test`는 모의 저장소로 오프라인·재시도·내용 충돌·서버 확인 전 완료 방지를 검사합니다. `npm run test:database`는 실제 DB에 합성 빈 손 시퀀스 2개(KSL/ASL, is_test=true)를 추가하고 SELECT·필터·중복·잘못된 frame_count 거부·익명 UPDATE/DELETE 차단을 확인합니다. 실제 영상/수어는 쓰지 않고 삭제 권한을 넓히지 않습니다. 필요하면 소유자가 Dashboard에서 테스트 행을 정리하세요.
+`npm run test:archive`는 기존 is_test 합성 행의 휴지통 이동·원본 불변·복원을 확인하고 존재하지 않는 UUID로 원본 UPDATE 거절·DELETE 허용을 검사합니다. 정상 목록은 archived=false이며 이전 휴지통 목록에서는 복원과 실제 삭제가 가능합니다.
+
+`npm test`는 합성 데이터·모의 저장소로 오프라인·재시도·내용 충돌·삭제 재업로드 방지·DTW를 검사합니다. `npm run test:database`는 실제 DB에 is_test 빈 손 시퀀스 2개를 추가하고 SELECT·필터·중복·형식 오류·원본 UPDATE 거절을 확인한 뒤, 이번 실행에서 만든 UUID만 삭제하고 재INSERT 차단을 확인합니다. 실제 영상/수어 자료는 지우지 않습니다.
+
+`npm run test:comparison`은 기존 활성 자료 조회·트림과 자기 자신 비교만 수행합니다(실제 인식 정확도 평가 아님). `--prepare-delete`는 삭제 검증 전용 합성 행 하나를 만들고 UUID를 .tools에 기록합니다. 웹 UI에서 해당 테스트 행만 삭제한 뒤 `--verify-delete`를 실행하면 별도 클라이언트에서 부재·삭제 기록·재업로드 차단·기존 UUID 보존을 검증합니다. 테스트 행은 실제 수어가 아니며 검증 직후 삭제하세요.
+
+웹 삭제는 UUID·is_test=false 조건 DELETE → 응답 검사 → ID SELECT 부재 → 삭제 기록 확인 순서입니다. 확인 전에는 성공으로 표시하지 않습니다. 삭제와 업로드가 경합해도 서버의 트리거가 재등록을 막습니다. 로컬 동기화는 삭제 기록 조회 또는 SB_SAMPLE_DELETED 응답을 `deleted` 상태로 저장하고 재시도하지 않습니다. 네트워크 실패는 원본을 보존합니다.
+
+[Supabase DELETE 문서](https://supabase.com/docs/reference/javascript/delete), [RLS 문서](https://supabase.com/docs/guides/database/postgres/row-level-security)를 참고하세요.
 
 기존 signbridgeai1 프로젝트 → Project configuration → Environment variables에서 두 VITE 변수를 Build에 제공하고 Deploys에서 재배포합니다. 기존 JS는 환경 변수 변경만으로 갱신되지 않습니다. 빌드 npm run build, publish dist, Node 24입니다. netlify.toml에 실제 키를 넣지 않습니다. 수동 배포는 환경 변수가 반영된 dist를 기존 사이트에 올립니다. 공개 주소만으로 관리 설정을 바꿀 수 없고 로그인·계정 사용량 문제는 기존 소유자가 해결해야 합니다.

@@ -5,7 +5,7 @@
 - `schema_version: "1.0.0"`
 - `preprocessing_version: "wrist-scale-spatial-v1"`
 - 인식·수집 기본 단위: 개별 수어 단어 한 번의 연속 동작. 정적 표현도 여러 프레임의 시퀀스로 보존.
-- KSL/ASL은 독립된 라벨 공간을 사용. TensorFlow.js 학습·단어 예측과 검증 자료 기반 대응 조회를 구현. 실제 수어로 학습·검증한 공개 모델과 문장 번역은 아직 제공하지 않음.
+- KSL/ASL은 독립된 라벨 공간을 사용. 기본 Try AI는 DTW+최근접 이웃으로 공용 시퀀스를 즉시 비교하며 단어당 1개도 허용. TensorFlow.js 학습·예측은 고급 기능으로 보존. 실제 수어로 검증한 공개 신경망 모델과 문장 번역은 아직 제공하지 않음.
 - 초기 단어 AI는 **손동작만으로 구별 가능한 사전 선정된 제한 어휘**를 대상으로 설계. 얼굴 표정·입 모양·머리·상체 움직임은 현재 수집·인식 대상에서 제외. 모든 수어 단어를 손만으로 구별한다고 가정하지 않음.
 - MediaPipe `@mediapipe/tasks-vision@1.1.1`, Hand Landmarker `float16/1`. 모델 해시는 `public/models/manifest.json` 참조.
 
@@ -119,6 +119,8 @@ pair:  right-left wrist dx, dy*(height/width), pair_presence = 3
 
 ## 구현된 KSL/ASL 학습·예측 인터페이스
 
+기본 Try AI 계약은 [COMPARISON_SPEC](COMPARISON_SPEC.md)의 `hand-dtw-v1`입니다. 원본 검증→파생 사본 자동 트림→공통 137차원 특징→최대 64개 시간 프레임→DTW→단어별 최근접 이웃 순서입니다. 최소 실제 유효 프레임 1개·최소 클래스 1개이며 샘플 수 부족은 경고입니다. 거리·유사도·샘플 수·후보·불확실 상태를 반환하며 점수를 정확도나 확률로 해석하지 않습니다. 30% 규칙으로 실행을 차단하지 않습니다. 아래 TensorFlow 텐서/독립 검증 조건은 기본 Try AI와 별개인 `#advanced/model` 개발 화면에만 적용됩니다.
+
 ```js
 const prepared = prepareTraining(dataset, 'KSL', selectedSignIds);
 const result = await trainer.train(prepared, {language:'KSL', allSigns:dataset.signs, epochs:30});
@@ -126,11 +128,13 @@ const prediction = await predictSequence(result.model, result.metadata, sample);
 // → {unknown, top: null | classWithConfidence, candidates, model_version}
 ```
 
-`src/ai/sequenceInput.js`는 공통 특징을 실제 시간 기준 32개 위치에서 최근접 관측으로 선택합니다. 관측과 목표 시각 차이가 200ms를 넘으면 해당 파생 특징 슬롯은 0으로 두며 원본을 보간하지 않습니다. 각 시간 단계에 `min(duration_ms/10000,12)`를 추가해 움직임 길이를 유지합니다. 입력은 **32×138**, input_version은 `nearest-time-32-duration-v1`입니다. 원본 스키마와 전처리 버전은 바꾸지 않습니다.
+새 학습 준비는 `shared/trainingQuality.js`에서 원본을 보존한 채 처음~마지막 손 검출 범위의 사본을 만들고 품질을 재계산합니다. 경고 자료는 사용자가 포함·제외를 선택하고, 단어별 한 손/양손 조건과 선택적 짧은 결측 보정 옵션을 적용합니다. 자세한 임계값·제외 사유·UI 규칙은 [TRAINING_QUALITY](TRAINING_QUALITY.md)를 따릅니다.
+
+`src/ai/sequenceInput.js`는 이 학습용 사본의 공통 특징을 실제 시간 기준 32개 위치에서 최근접 관측으로 선택합니다. 관측과 목표 시각 차이가 200ms를 넘으면 해당 파생 특징 슬롯은 0으로 둡니다. 각 시간 단계에 `min(duration_ms/10000,12)`를 추가해 움직임 길이를 유지합니다. 입력은 **32×138**, 새 input_version은 `trim-continuity-32-duration-v2`, processing.version은 `hand-span-continuity-v2`입니다. 원본 스키마와 좌표 전처리 버전은 바꾸지 않습니다. 추론도 같은 파생 처리를 사용합니다. 이전 `nearest-time-32-duration-v1` 모델은 기존 원본 입력 규칙으로 계속 로드·실행합니다.
 
 기본 구조는 Conv1D(24, kernel3, same, relu) → Conv1D(24, kernel3, stride2, relu) → Flatten → Dense32/relu → Dropout0.2 → Dense N/softmax입니다. Adam 0.001, categoricalCrossentropy, batch≤16, Epoch 1~200입니다. TensorFlow.js를 지연 로드하며 별도 추론 서버는 없습니다.
 
-학습에서 미감지 >30%, 10프레임 미만, 0.5초 미만은 제외합니다. 2클래스 이상, 클래스당 학습≥2·검증≥1이 필요합니다. 촬영자 그룹 보류를 우선하고 불가능하면 세션 그룹으로 분리합니다. 이 최소량은 성능 보장 기준이 아닙니다. 검증 자료를 Epoch마다 참고하므로 최종 성능에는 별도 미참여 촬영자 테스트가 필요합니다. 브라우저 한도는 2000 유효 샘플·100클래스입니다.
+새 학습에서는 트림 후 실제 유효 프레임 10개 미만·손 검출 전무·형식 오류 등만 사용 불가로 제외합니다. 트림 후 미검출/필요 손 부족 >30%, 0.5초 미만 등은 경고로 표시하고 사용자가 포함 여부를 선택합니다. 2클래스 이상, 클래스당 학습≥2·검증≥1이 필요합니다. 촬영자 그룹 보류를 우선하고 불가능하면 세션 그룹으로 분리합니다. 이 최소량은 성능 보장 기준이 아닙니다. 검증 자료를 Epoch마다 참고하므로 최종 성능에는 별도 미참여 촬영자 테스트가 필요합니다. 브라우저 한도는 2000 유효 샘플·100클래스입니다.
 
 metadata.json은 format_version=1.0.0, model_version, language, schema/preprocessing/input 버전, time_steps=32, feature_size=138, 순서 있는 classes, split_by, 샘플 수·검증 지표, confidence_threshold=0.75, margin_threshold=0.15를 포함합니다. 각 클래스에 gloss_ko/gloss_en와 검증한 대응 항목을 보존합니다. 표기는 자동 번역하지 않습니다. 대응은 양쪽 검증 표시·같은 concept_id·출처가 있어야 합니다.
 

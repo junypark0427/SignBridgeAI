@@ -29,7 +29,7 @@ export class SyncManager {
           const record = records.get(this.key(s.sample_id));
           return [
             s.sample_id,
-            record?.fingerprint === fingerprint
+            record?.state === "deleted" || record?.fingerprint === fingerprint
               ? record
               : { state: "pending", attempts: 0, fingerprint },
           ];
@@ -58,9 +58,23 @@ export class SyncManager {
       this.again = false;
       const dataset = await this.store.read(),
         states = await this.states(dataset.samples, dataset.signs);
+      const deleted =
+        (await this.repository.deletedIds?.(
+          dataset.samples.map((s) => s.sample_id),
+        )) ?? new Set();
       for (const sample of dataset.samples) {
         if (!this.online()) break;
         const previous = states.get(sample.sample_id);
+        if (deleted.has(sample.sample_id)) {
+          if (previous.state !== "deleted")
+            await this.set(sample.sample_id, {
+              ...previous,
+              state: "deleted",
+              error: null,
+            });
+          continue;
+        }
+        if (previous.state === "deleted") continue;
         if (previous.state === "synced") continue;
         const record = {
           state: "uploading",
@@ -81,7 +95,9 @@ export class SyncManager {
         } catch (error) {
           await this.set(sample.sample_id, {
             ...record,
-            state: "error",
+            state: /SB_SAMPLE_DELETED/.test(error.message ?? "")
+              ? "deleted"
+              : "error",
             error: String(error?.message ?? error).slice(0, 400),
           });
         }

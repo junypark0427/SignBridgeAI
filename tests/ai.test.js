@@ -6,6 +6,7 @@ import {
   prepareTraining,
   TIME_STEPS,
   INPUT_SIZE,
+  LEGACY_INPUT_VERSION,
 } from "../src/ai/sequenceInput.js";
 import { SignTrainer } from "../src/ai/trainer.js";
 import {
@@ -101,6 +102,24 @@ test("real TensorFlow.js training, inference, in-memory model round trip, and me
   assert.ok(Number.isFinite(result.validation.loss));
   assert.ok(result.validation.accuracy >= 0 && result.validation.accuracy <= 1);
   validateMetadata(result.metadata, "KSL");
+  const legacy = { ...result.metadata, input_version: LEGACY_INPUT_VERSION };
+  delete legacy.processing;
+  validateMetadata(legacy, "KSL");
+  const padded = sample();
+  padded.frames.slice(0, 8).forEach((frame) => {
+    frame.hands = [];
+    frame.detected_hand_count = 0;
+  });
+  const newPrediction = await predictSequence(
+    result.model,
+    result.metadata,
+    padded,
+  );
+  assert.equal(newPrediction.candidates.length, 2);
+  await assert.rejects(
+    predictSequence(result.model, legacy, padded),
+    /이전 규격/,
+  );
   validateModelShape(result.model, result.metadata);
   const prediction = await predictSequence(
     result.model,
