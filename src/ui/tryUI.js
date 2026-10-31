@@ -45,12 +45,20 @@ export class TryUI {
         : this.startCamera();
     $("try-start").onclick = () => this.startRecognition();
     $("try-stop").onclick = () => this.finish();
+    $("try-stop")
+      .closest(".camera-toolbar")
+      .insertAdjacentHTML(
+        "afterend",
+        '<p id="try-controls-status" class="capture-sync-status" role="status" aria-live="polite"></p>',
+      );
     const refresh = () => {
       if (
         location.hash === "#try" &&
         !document.hidden &&
         !this.collector.active &&
-        !this.predicting
+        !this.predicting &&
+        !this.loading &&
+        !this.cameraBusy
       )
         this.load();
     };
@@ -87,6 +95,19 @@ export class TryUI {
     $("try-start").disabled =
       !this.cameraRunning || !this.gallery?.samples.length || busy || recording;
     $("try-stop").disabled = !recording;
+    $("try-controls-status").textContent = recording
+      ? "인식 중입니다. 단어를 한 번 표현한 뒤 인식 종료를 누르세요. 10초가 지나면 자동 종료됩니다."
+      : this.predicting
+        ? "동작을 비교하고 있습니다. 잠시 기다려 주세요."
+        : this.cameraBusy
+          ? "카메라를 준비하고 있습니다."
+          : this.loading
+            ? "공용 데이터를 준비하고 있습니다. 준비가 끝나면 인식을 시작할 수 있습니다."
+            : !this.cameraRunning
+              ? "카메라를 시작하면 인식할 수 있습니다."
+              : !this.gallery?.samples.length
+                ? "비교할 공용 데이터가 없습니다. 데이터 등록 또는 새로고침을 확인하세요."
+                : "준비되었습니다. 인식 시작을 누르면 바로 녹화합니다.";
   }
   renderGallery() {
     const g = this.gallery;
@@ -214,33 +235,31 @@ export class TryUI {
       this.stop(error.message);
     }
   }
-  async startRecognition() {
+  startRecognition() {
     if (
       !this.cameraRunning ||
       this.loading ||
       this.predicting ||
-      this.collector.active
-    )
-      return;
-    const generation = this.generation;
-    // Refresh at the recording boundary as well as entry, so remote deletion
-    // cannot leave a stale gallery enabled indefinitely on an open page.
-    if (
-      !(await this.load()) ||
-      generation !== this.generation ||
+      this.collector.active ||
       !this.gallery?.samples.length
     )
       return;
-    this.collector.start(
-      this.gallery.samples[0].sign,
-      "try-anonymous",
-      `try-${crypto.randomUUID()}`,
-      this.capture,
-    );
-    this.timer = setTimeout(() => this.finish(), 10000);
-    this.message(
-      "수어 단어 하나를 수행한 뒤 인식 종료를 누르세요. 최대 10초. 체험 영상·좌표는 저장하거나 업로드하지 않습니다.",
-    );
+    try {
+      this.clearResult();
+      this.collector.start(
+        this.gallery.samples[0].sign,
+        "try-anonymous",
+        `try-${crypto.randomUUID()}`,
+        this.capture,
+      );
+      this.timer = setTimeout(() => this.finish(), 10000);
+      this.message(
+        "인식이 시작되었습니다. 단어 하나를 표현한 뒤 인식 종료를 누르세요. 최대 10초.",
+      );
+    } catch (error) {
+      this.collector.cancel();
+      this.message(`인식을 시작하지 못했습니다. ${error.message}`);
+    }
     this.toggle();
   }
   async finish() {
@@ -248,10 +267,10 @@ export class TryUI {
     clearTimeout(this.timer);
     const generation = this.generation;
     this.predicting = true;
-    this.toggle();
     const controller = (this.compareAbort = new AbortController());
     try {
       const raw = this.collector.stop();
+      this.toggle();
       this.message("최신 공용 데이터와 동작 비교 중…");
       const gallery = await loadGallery(this.repository, raw.language, {
         signal: controller.signal,
