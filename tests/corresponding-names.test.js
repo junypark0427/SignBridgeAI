@@ -39,7 +39,13 @@ async function render(top, catalog) {
   };
   try {
     await TryUI.prototype.renderResult.call(
-      { repository, generation: 1, sentence: { mode: "word" }, message() {} },
+      {
+        repository,
+        generation: 1,
+        sentence: { mode: "word" },
+        speech: { supported: true, stop() {} },
+        message() {},
+      },
       result,
       1,
     );
@@ -75,6 +81,9 @@ test("multiple registered names are shown, missing is distinct from lookup error
   const failed = await render(ksl, new Error("offline"));
   assert.match(failed, /조회 실패/);
   assert.doesNotMatch(failed, /meaning not registered/);
+  assert.match(failed, /data-speech="en" disabled/);
+  assert.match(await render(asl, []), /data-speech="ko" disabled/);
+  assert.match(multiple, /id="speech-choice-en"/);
 });
 
 test("registered names are safely escaped", async () => {
