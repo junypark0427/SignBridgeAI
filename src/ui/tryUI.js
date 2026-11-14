@@ -3,6 +3,7 @@ import { CameraManager } from "../camera/cameraManager.js";
 import { HandTracker } from "../mediapipe/handTracker.js";
 import { WordCollector } from "../collector/wordCollector.js";
 import { SentenceUI } from "./sentenceUI.js";
+import { correspondingNames } from "./correspondingNames.js";
 import {
   loadGallery,
   compareSequence,
@@ -292,35 +293,31 @@ export class TryUI {
     }
   }
   async renderResult(result, generation) {
-    const top = result.top,
-      other = top.language === "KSL" ? "ASL" : "KSL";
-    let counterparts = [],
-      correspondenceMessage = "검증된 대응 수어 자료가 없습니다.";
-    try {
-      if (top.correspondence_verified && top.source) {
-        counterparts = (await this.repository.signCatalog(other)).filter(
-          (sign) =>
-            sign.concept_id === top.concept_id &&
-            sign.correspondence_verified &&
-            sign.source,
-        );
-        if (counterparts.length) correspondenceMessage = "";
-      }
-    } catch {
-      correspondenceMessage =
-        "대응 자료를 조회하지 못했습니다. 다시 시도하세요.";
-    }
+    const top = result.top;
+    const {
+      other,
+      matches: counterparts,
+      status,
+    } = await correspondingNames(this.repository, top);
     if (generation !== this.generation) return;
     if (this.sentence.mode === "sentence") this.sentence.setCandidate(result);
+    const missing =
+      status === "error"
+        ? "조회 실패 · 다시 시도해 주세요"
+        : other === "KSL"
+          ? "의미 미등록"
+          : "meaning not registered";
+    const names =
+      [...new Set(counterparts.map((sign) => sign.label))].join(", ") ||
+      missing;
+    const ko = top.language === "KSL" ? top.label : names;
+    const en = top.language === "ASL" ? top.label : names;
+    const correspondenceMessage =
+      status === "error"
+        ? "등록 표현을 조회하지 못했습니다. 다시 시도해 주세요."
+        : "같은 의미 코드로 등록된 표현이 없습니다.";
     $("try-result").innerHTML =
-      `<p class="result-state">${result.uncertain ? "인식이 불확실합니다 · 가장 가까운 후보" : "가장 유사한 단어 후보"}</p><div class="prediction-heading">${escapeHTML(top.label)}</div><p>${escapeHTML(top.language)} · 비교 점수 ${(top.similarity * 100).toFixed(1)} / 100</p><p class="cloud-notice">유사도 점수는 검증된 정확도나 확률이 아닙니다. ${result.single_candidate ? "후보가 하나뿐이므로 해당 단어와의 닮은 정도만 표시합니다." : ""}</p><div class="prediction-gloss"><span>한국어 <strong>${escapeHTML(top.language === "KSL" ? top.label : "의미 미등록")}</strong></span><span>English <strong>${escapeHTML(top.language === "ASL" ? top.label : "meaning not registered")}</strong></span></div><p>공통 의미 코드 · ${escapeHTML(top.concept_id)}</p><h3>상위 비교 후보</h3>${result.candidates.map((c) => `<div class="candidate"><span>${escapeHTML(c.label)}<small>${c.sample_count}개 샘플</small></span><meter min="0" max="1" value="${c.similarity}"></meter><strong>${(c.similarity * 100).toFixed(1)}</strong></div>`).join("")}<p>총 ${result.sample_count}개 샘플 · ${result.word_count}개 단어 비교</p><h3>검증된 ${other} 대응 표현</h3>${counterparts.map((sign) => `<p>${escapeHTML(sign.label)}<small>${escapeHTML(sign.source)}</small></p>`).join("") || `<p>${correspondenceMessage}</p>`}`;
-    const ko = top.language === "KSL" ? top.label : counterparts[0]?.label;
-    const en = top.language === "ASL" ? top.label : counterparts[0]?.label;
-    const glosses = $("try-result").querySelectorAll(
-      ".prediction-gloss strong",
-    );
-    glosses[0].textContent = ko || "의미 미등록";
-    glosses[1].textContent = en || "meaning not registered";
+      `<p class="result-state">${result.uncertain ? "인식이 불확실합니다 · 가장 가까운 후보" : "가장 유사한 단어 후보"}</p><div class="prediction-heading">${escapeHTML(top.label)}</div><p>${escapeHTML(top.language)} · 비교 점수 ${(top.similarity * 100).toFixed(1)} / 100</p><p class="cloud-notice">유사도 점수는 검증된 정확도나 확률이 아닙니다. ${result.single_candidate ? "후보가 하나뿐이므로 해당 단어와의 닮은 정도만 표시합니다." : ""}</p><div class="prediction-gloss"><span>한국어 <strong>${escapeHTML(ko)}</strong></span><span>English <strong>${escapeHTML(en)}</strong></span></div><p>공통 의미 코드 · ${escapeHTML(top.concept_id)}</p><h3>상위 비교 후보</h3>${result.candidates.map((c) => `<div class="candidate"><span>${escapeHTML(c.label)}<small>${c.sample_count}개 샘플</small></span><meter min="0" max="1" value="${c.similarity}"></meter><strong>${(c.similarity * 100).toFixed(1)}</strong></div>`).join("")}<p>총 ${result.sample_count}개 샘플 · ${result.word_count}개 단어 비교</p><h3>같은 의미 코드의 ${other} 등록 표현</h3><p class="cloud-notice">같은 의미 코드로 등록된 이름입니다. 완전한 수어 대응이 검증된 것은 아닙니다.</p>${counterparts.map((sign) => `<p>${escapeHTML(sign.label)}<small>${sign.correspondence_verified ? "대응 관계 검증 표시됨" : "대응 관계 미검증"} · ${escapeHTML(sign.source || "출처 미등록")}</small></p>`).join("") || `<p>${correspondenceMessage}</p>`}`;
     this.message(
       `비교 완료.${result.uncertain ? " 후보 간 차이가 작거나 등록 동작과 차이가 큽니다. 정답으로 단정하지 마세요." : ""} ${result.quality.warnings.join(" ")}`,
     );
