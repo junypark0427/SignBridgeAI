@@ -2,6 +2,7 @@ import { escapeHTML, drawHands } from "./collectorUI.js";
 import { CameraManager } from "../camera/cameraManager.js";
 import { HandTracker } from "../mediapipe/handTracker.js";
 import { WordCollector } from "../collector/wordCollector.js";
+import { HandSegmenter, segmentToSample } from "../collector/handSegmenter.js";
 import { SentenceUI } from "./sentenceUI.js";
 import { correspondingNames } from "./correspondingNames.js";
 import {
@@ -46,6 +47,17 @@ export class TryUI {
         : this.startCamera();
     $("try-start").onclick = () => this.startRecognition();
     $("try-stop").onclick = () => this.finish();
+    $("sentence-boundary").onclick = () => {
+      if (this.sentenceActive && !this.sentenceClosing) {
+        const segment = this.segmenter.finish({ waitForRelease: true });
+        if (segment) this.enqueueSentenceSegment(segment);
+        else
+          this.message(
+            "확정할 손동작이 아직 없습니다. 손을 연속으로 보여 주세요.",
+          );
+        this.toggle();
+      }
+    };
     $("try-stop")
       .closest(".camera-toolbar")
       .insertAdjacentHTML(
@@ -57,6 +69,7 @@ export class TryUI {
         location.hash === "#try" &&
         !document.hidden &&
         !this.collector.active &&
+        !this.sentenceActive &&
         !this.predicting &&
         !this.loading &&
         !this.cameraBusy
@@ -83,32 +96,51 @@ export class TryUI {
   }
   toggle() {
     const recording = Boolean(this.collector.active),
+      activeSentence = Boolean(this.sentenceActive),
       busy = this.loading || this.predicting || this.cameraBusy;
     for (const id of ["try-language", "try-refresh", "try-distance"])
-      $(id).disabled = busy || recording;
+      $(id).disabled = busy || recording || activeSentence;
     $("try-language").disabled ||= this.sentence?.mode === "sentence";
     for (const id of ["mode-word", "mode-sentence"])
-      $(id).disabled = this.cameraBusy || this.predicting || recording;
-    $("try-camera").disabled = this.cameraBusy || this.predicting;
+      $(id).disabled =
+        this.cameraBusy || this.predicting || recording || activeSentence;
+    $("try-camera").disabled =
+      this.cameraBusy || this.predicting || activeSentence;
     $("try-camera").textContent = this.cameraRunning
       ? "카메라 종료"
       : "카메라 시작";
     $("try-start").disabled =
-      !this.cameraRunning || !this.gallery?.samples.length || busy || recording;
-    $("try-stop").disabled = !recording;
-    $("try-controls-status").textContent = recording
-      ? "인식 중입니다. 단어를 한 번 표현한 뒤 인식 종료를 누르세요. 10초가 지나면 자동 종료됩니다."
-      : this.predicting
-        ? "동작을 비교하고 있습니다. 잠시 기다려 주세요."
-        : this.cameraBusy
-          ? "카메라를 준비하고 있습니다."
-          : this.loading
-            ? "공용 데이터를 준비하고 있습니다. 준비가 끝나면 인식을 시작할 수 있습니다."
-            : !this.cameraRunning
-              ? "카메라를 시작하면 인식할 수 있습니다."
-              : !this.gallery?.samples.length
-                ? "비교할 공용 데이터가 없습니다. 데이터 등록 또는 새로고침을 확인하세요."
-                : "준비되었습니다. 인식 시작을 누르면 바로 녹화합니다.";
+      !this.cameraRunning ||
+      !this.gallery?.samples.length ||
+      busy ||
+      recording ||
+      activeSentence;
+    $("try-stop").disabled = activeSentence
+      ? Boolean(this.sentenceClosing)
+      : !recording;
+    const boundary = $("sentence-boundary"),
+      gap = $("sentence-gap");
+    if (boundary) boundary.disabled = !activeSentence || this.sentenceClosing;
+    if (gap) gap.disabled = activeSentence;
+    $("try-controls-status").textContent = activeSentence
+      ? this.sentenceClosing
+        ? "마지막 단어와 대기 중인 동작을 분석하고 있습니다."
+        : this.segmenter.frames
+          ? `손동작 수집 중 · 손을 ${this.segmenter.gapMs}ms 이상 내리면 단어가 확정됩니다.`
+          : `손 감지 대기 중 · 단어 사이에 손을 ${this.segmenter.gapMs}ms 이상 내려 주세요.`
+      : recording
+        ? "인식 중입니다. 단어를 한 번 표현한 뒤 인식 종료를 누르세요. 10초가 지나면 자동 종료됩니다."
+        : this.predicting
+          ? "동작을 비교하고 있습니다. 잠시 기다려 주세요."
+          : this.cameraBusy
+            ? "카메라를 준비하고 있습니다."
+            : this.loading
+              ? "공용 데이터를 준비하고 있습니다. 준비가 끝나면 인식을 시작할 수 있습니다."
+              : !this.cameraRunning
+                ? "카메라를 시작하면 인식할 수 있습니다."
+                : !this.gallery?.samples.length
+                  ? "비교할 공용 데이터가 없습니다. 데이터 등록 또는 새로고침을 확인하세요."
+                  : "준비되었습니다. 인식 시작을 누르면 바로 녹화합니다.";
   }
   renderGallery() {
     const g = this.gallery;
@@ -222,7 +254,12 @@ export class TryUI {
         hands = this.tracker.detect($("try-video"), now);
       if (hands !== null) {
         drawHands($("try-overlay"), hands);
-        this.collector.add(hands, now);
+        if (this.sentenceActive && !this.sentenceClosing) {
+          const wasCapturing = Boolean(this.segmenter.frames);
+          const segment = this.segmenter.add(hands, now);
+          if (segment) this.enqueueSentenceSegment(segment);
+          if (wasCapturing !== Boolean(this.segmenter.frames)) this.toggle();
+        } else this.collector.add(hands, now);
         this.frames++;
         if (now - this.frameStart > 1000) {
           $("try-tracker-status").textContent =
@@ -242,9 +279,30 @@ export class TryUI {
       this.loading ||
       this.predicting ||
       this.collector.active ||
+      this.sentenceActive ||
       !this.gallery?.samples.length
     )
       return;
+    if (this.sentence.mode === "sentence") {
+      const gap = Number($("sentence-gap").value);
+      if (!Number.isFinite(gap) || gap < 200 || gap > 3000) {
+        this.message("손 미검출 시간은 200~3000ms로 설정하세요.");
+        return;
+      }
+      this.clearResult();
+      this.segmenter = new HandSegmenter({ gapMs: gap });
+      this.sentenceQueue = Promise.resolve();
+      this.sentencePending = 0;
+      this.sentenceErrors = [];
+      this.sentenceClosing = false;
+      this.sentenceActive = true;
+      this.compareAbort = new AbortController();
+      this.message(
+        "문장 인식 중입니다. 단어 사이에 손을 화면 밖으로 내려 주세요.",
+      );
+      this.toggle();
+      return;
+    }
     try {
       this.clearResult();
       this.collector.start(
@@ -264,6 +322,7 @@ export class TryUI {
     this.toggle();
   }
   async finish() {
+    if (this.sentenceActive) return this.finishSentence();
     if (!this.collector.active || this.predicting) return;
     clearTimeout(this.timer);
     const generation = this.generation;
@@ -292,7 +351,7 @@ export class TryUI {
       this.toggle();
     }
   }
-  async renderResult(result, generation) {
+  async renderResult(result, generation, { automatic = false } = {}) {
     const top = result.top;
     const {
       other,
@@ -300,7 +359,10 @@ export class TryUI {
       status,
     } = await correspondingNames(this.repository, top);
     if (generation !== this.generation) return;
-    if (this.sentence.mode === "sentence") this.sentence.setCandidate(result);
+    if (this.sentence.mode === "sentence") {
+      if (automatic) this.sentence.appendRecognized(result);
+      else this.sentence.setCandidate(result);
+    }
     const missing =
       status === "error"
         ? "조회 실패 · 다시 시도해 주세요"
@@ -322,10 +384,63 @@ export class TryUI {
       `비교 완료.${result.uncertain ? " 후보 간 차이가 작거나 등록 동작과 차이가 큽니다. 정답으로 단정하지 마세요." : ""} ${result.quality.warnings.join(" ")}`,
     );
   }
+  enqueueSentenceSegment(frames) {
+    const generation = this.generation;
+    const signal = this.compareAbort.signal;
+    this.sentencePending++;
+    this.message(
+      `단어 동작을 구분했습니다. 분석 대기 ${this.sentencePending}개 · 다음 단어를 계속 표현할 수 있습니다.`,
+    );
+    this.sentenceQueue = this.sentenceQueue
+      .then(async () => {
+        if (signal.aborted || generation !== this.generation) return;
+        const raw = segmentToSample(
+          frames,
+          this.gallery.samples[0].sign,
+          this.capture,
+        );
+        const result = await compareSequence(this.gallery, raw, {
+          signal,
+          distanceLimit: Number($("try-distance").value),
+        });
+        if (!signal.aborted && generation === this.generation)
+          await this.renderResult(result, generation, { automatic: true });
+      })
+      .catch((error) => {
+        if (!signal.aborted && generation === this.generation) {
+          this.sentenceErrors.push(error.message);
+          this.message(`단어 분석 실패: ${error.message}`);
+        }
+      })
+      .finally(() => {
+        if (generation === this.generation) this.sentencePending--;
+      });
+  }
+  async finishSentence() {
+    if (this.sentenceClosing) return;
+    this.sentenceClosing = true;
+    const generation = this.generation;
+    const last = this.segmenter.finish();
+    if (last) this.enqueueSentenceSegment(last);
+    this.toggle();
+    this.message("마지막 단어와 분석 대기 중인 동작을 처리하고 있습니다.");
+    await this.sentenceQueue;
+    if (generation !== this.generation) return;
+    this.sentenceActive = false;
+    this.sentenceClosing = false;
+    this.message(
+      this.sentenceErrors.length
+        ? `문장 인식 종료 · ${this.sentenceErrors.length}개 동작 분석 실패: ${this.sentenceErrors.join(" / ")}`
+        : "문장 인식이 끝났습니다. 단어를 확인·수정한 뒤 문장 변환을 누르세요.",
+    );
+    this.toggle();
+  }
   stop(message) {
     this.generation++;
     this.compareAbort?.abort();
     this.predicting = false;
+    this.sentenceActive = false;
+    this.sentenceClosing = false;
     cancelAnimationFrame(this.animation);
     clearTimeout(this.timer);
     this.collector.cancel();

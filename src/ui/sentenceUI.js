@@ -16,7 +16,7 @@ export class SentenceUI {
       .querySelector(".try-layout")
       .insertAdjacentHTML(
         "afterend",
-        `<section id="sentence-panel" class="sentence-panel" hidden><h2>문장 구성 <small>Beta</small></h2><p>단어를 하나씩 인식하고 확인 후 추가하세요. 제한된 한국어 구절 생성 실험이며 연속 수어 분리나 완전한 수어 번역은 지원하지 않습니다.</p><p id="sentence-candidate">먼저 단어를 인식하세요.</p><button id="sentence-add" class="button primary small" disabled>문장에 추가</button><div id="sentence-words" class="sentence-words"></div><div class="sentence-actions"><button id="sentence-last" class="button secondary small">마지막 단어 삭제</button><button id="sentence-clear" class="button secondary small">전체 초기화</button><label>표현 형식 <select id="sentence-style"><option value="dictionary">기본형</option><option value="present">현재형</option></select></label><button id="sentence-convert" class="button primary small">문장 변환</button></div><p id="sentence-output" role="status">사랑 → 배우다 순서로 추가한 뒤 변환해 보세요.</p><p class="cloud-notice">KSL만 지원합니다. 얼굴 표정·공간 문법은 해석하지 않으며 변환 결과가 수어 문법 전체의 번역을 뜻하지 않습니다.</p></section>`,
+        `<section id="sentence-panel" class="sentence-panel" hidden><h2>문장 구성 <small>Beta</small></h2><p>인식 시작 후 단어 사이에 손을 화면 밖으로 내려 주세요. 손이 보이지 않는 시간으로 단어를 구분하는 실험입니다.</p><label>손 미검출 구분 시간 (밀리초) <input id="sentence-gap" type="number" min="200" max="3000" step="100" value="600"></label> <button id="sentence-boundary" class="button secondary small" type="button" disabled>현재 단어 확정</button><p id="sentence-candidate">인식 시작 후 단어를 표현하세요.</p><button id="sentence-add" class="button primary small" disabled>문장에 추가</button><div id="sentence-words" class="sentence-words"></div><div class="sentence-actions"><button id="sentence-last" class="button secondary small">마지막 단어 삭제</button><button id="sentence-clear" class="button secondary small">전체 초기화</button><label>표현 형식 <select id="sentence-style"><option value="dictionary">기본형</option><option value="present">현재형</option></select></label><button id="sentence-convert" class="button primary small">문장 변환</button></div><p id="sentence-output" role="status">사랑 → 배우다 순서로 추가한 뒤 변환해 보세요.</p><p class="cloud-notice">KSL만 지원합니다. 얼굴 표정·공간 문법은 해석하지 않으며 변환 결과가 수어 문법 전체의 번역을 뜻하지 않습니다.</p></section>`,
       );
     $("mode-word").onclick = () => this.setMode("word");
     $("mode-sentence").onclick = () => this.setMode("sentence");
@@ -88,6 +88,13 @@ export class SentenceUI {
     this.candidate = result?.top
       ? { sign: result.top, uncertain: result.uncertain }
       : null;
+    this.render();
+  }
+  appendRecognized(result) {
+    if (!result?.top) return;
+    this.words.add(result.top, "recognized", result.uncertain);
+    this.candidate = null;
+    this.invalidate();
     this.render();
   }
   clearCandidate() {
