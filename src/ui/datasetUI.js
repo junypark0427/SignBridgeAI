@@ -41,6 +41,13 @@ export class DatasetUI {
         <p id="cloud-message" role="status"></p>
       </div>`,
     );
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `<dialog id="cloud-edit-dialog"><form id="cloud-edit-form"><h2>공용 데이터 수정</h2><p id="cloud-edit-info"></p><p>단어 정보는 같은 표현 ID의 모든 샘플에 적용됩니다. 촬영자와 세션은 이 샘플만 변경됩니다. 손 좌표와 언어는 변경되지 않습니다.</p><label>수어 종류 <input name="language" readonly></label><label>단어 이름 <input name="label" required maxlength="500"></label><label>공통 의미 코드 <input name="concept_id" required maxlength="500"></label><label>표현 ID <input name="sign_id" required maxlength="500"></label><label>촬영자 ID <input name="signer_id" required maxlength="500"></label><label>세션 ID <input name="session_id" required maxlength="500"></label><label>설명 <textarea name="description" maxlength="3000"></textarea></label><label>출처 <textarea name="source" maxlength="3000"></textarea></label><p id="cloud-edit-error" role="status"></p><button type="submit" class="button primary">변경 내용 확인</button> <button type="button" id="cloud-edit-cancel" class="button secondary">취소</button></form></dialog>`,
+    );
+    this.$("cloud-edit-cancel").onclick = () =>
+      this.$("cloud-edit-dialog").close();
+    this.$("cloud-edit-form").onsubmit = (event) => this.saveEdit(event);
     this.$("cloud-refresh").onclick = () => this.refresh();
     this.$("cloud-archive-view").onchange = () => this.refresh();
     this.$("cloud-reset").onclick = () => {
@@ -69,6 +76,8 @@ export class DatasetUI {
       this.loadPage();
     };
     this.$("cloud-rows").onclick = async (e) => {
+      const edit = e.target.closest("[data-cloud-edit]");
+      if (edit) this.openEdit(edit.dataset.cloudEdit);
       const remove = e.target.closest("[data-cloud-delete]");
       if (remove) this.changeDelete(remove.dataset.cloudDelete);
       const button = e.target.closest("[data-cloud-review]");
@@ -138,6 +147,86 @@ export class DatasetUI {
   }
   $(id) {
     return document.getElementById(id);
+  }
+  async openEdit(id) {
+    await this.action(async () => {
+      const row = await this.repository.get(id);
+      const count = await this.repository.editGroupCount(row.sign_id);
+      const form = this.$("cloud-edit-form");
+      for (const key of [
+        "language",
+        "label",
+        "concept_id",
+        "sign_id",
+        "signer_id",
+        "session_id",
+      ])
+        form.elements[key].value = row[key];
+      for (const key of ["description", "source"])
+        form.elements[key].value = row.sign_metadata[key] ?? "";
+      this.editState = { row, count };
+      this.$("cloud-edit-info").textContent =
+        `언어 ${row.language} · 촬영 ${new Date(row.created_at).toLocaleString("ko-KR")} · 같은 표현 ${count}개 (휴지통 포함)`;
+      this.$("cloud-edit-error").textContent = "";
+      this.$("cloud-edit-dialog").showModal();
+    });
+  }
+  async saveEdit(event) {
+    event.preventDefault();
+    if (this.busy || !this.editState) return;
+    const { row, count } = this.editState;
+    const keys = [
+      "label",
+      "concept_id",
+      "sign_id",
+      "signer_id",
+      "session_id",
+      "description",
+      "source",
+    ];
+    const data = new FormData(event.target);
+    const values = Object.fromEntries(
+      keys.map((key) => [key, String(data.get(key) ?? "").trim()]),
+    );
+    const changes = keys.filter(
+      (key) => values[key] !== (row[key] ?? row.sign_metadata[key] ?? ""),
+    );
+    if (!changes.length) {
+      this.$("cloud-edit-error").textContent = "변경된 항목이 없습니다.";
+      return;
+    }
+    const details = changes
+      .map(
+        (key) =>
+          `${key}: ${row[key] ?? row.sign_metadata[key] ?? ""} → ${values[key]}`,
+      )
+      .join("\n");
+    if (
+      !confirm(
+        `공용 데이터 수정 확인\n${row.language} · ${row.label}\n공통 단어 정보는 같은 표현 ${count}개에 적용되고, 촬영자·세션은 선택한 샘플에만 적용됩니다. 의미 코드가 바뀌면 대응 관계의 검증 상태는 해제됩니다.\n\n${details}\n\n저장할까요?`,
+      )
+    )
+      return;
+    this.busy = true;
+    this.toggle();
+    try {
+      const updated = await this.repository.editMetadata(row, values, count);
+      this.$("cloud-edit-dialog").close();
+      this.editState = null;
+      this.pendingSuccessMessage = `공용 데이터 ${updated}개 수정 완료. 이 기기의 기존 로컬 사본은 이전 내용일 수 있습니다.`;
+      window.dispatchEvent(new Event("signbridge:data-changed"));
+      this.refreshRequested = true;
+    } catch (error) {
+      this.$("cloud-edit-error").textContent =
+        `저장 실패: ${error.message ?? error}. DB 수정 기능 설정과 입력 값을 확인하세요.`;
+    } finally {
+      this.busy = false;
+      this.toggle();
+      if (this.refreshRequested) {
+        this.refreshRequested = false;
+        this.refresh();
+      }
+    }
   }
   async changeDelete(id) {
     if (this.busy || !this.repository) return;
@@ -281,11 +370,13 @@ export class DatasetUI {
     this.$("cloud-rows").innerHTML = this.rows
       .map(
         (s) =>
-          `<tr><td><span class="cloud-language">${escapeHTML(s.language)}</span> <strong>${escapeHTML(s.label)}</strong><small>${escapeHTML(s.sign_id)}</small></td><td>${escapeHTML(s.signer_id)}<small>${escapeHTML(s.session_id)}</small></td><td>${escapeHTML(new Date(s.created_at).toLocaleString("ko-KR"))}</td><td>${(s.duration_ms / 1000).toFixed(2)}s<small>${s.frame_count} 프레임</small></td><td><button class="text-button" data-cloud-review="${escapeHTML(s.id)}">검토</button> <button class="text-button delete-text" data-cloud-delete="${escapeHTML(s.id)}">삭제</button> ${s.archived ? `<button class="text-button" data-cloud-archive="${escapeHTML(s.id)}" data-archive-value="false">복원</button>` : ""}</td></tr>`,
+          `<tr><td><span class="cloud-language">${escapeHTML(s.language)}</span> <strong>${escapeHTML(s.label)}</strong><small>${escapeHTML(s.sign_id)}</small></td><td>${escapeHTML(s.signer_id)}<small>${escapeHTML(s.session_id)}</small></td><td>${escapeHTML(new Date(s.created_at).toLocaleString("ko-KR"))}</td><td>${(s.duration_ms / 1000).toFixed(2)}s<small>${s.frame_count} 프레임</small></td><td><button class="text-button" data-cloud-review="${escapeHTML(s.id)}">검토</button> <button class="text-button" data-cloud-edit="${escapeHTML(s.id)}">수정</button> <button class="text-button delete-text" data-cloud-delete="${escapeHTML(s.id)}">삭제</button> ${s.archived ? `<button class="text-button" data-cloud-archive="${escapeHTML(s.id)}" data-archive-value="false">복원</button>` : ""}</td></tr>`,
       )
       .join("");
     this.$("cloud-message").textContent =
+      this.pendingSuccessMessage ??
       "조회 완료. 삭제는 확인 후 서버의 실제 샘플을 영구 삭제합니다. 삭제 전에 JSON으로 백업할 수 있습니다.";
+    this.pendingSuccessMessage = null;
     this.message("Supabase 연결됨");
   }
   renderSync(samples, states, configured) {

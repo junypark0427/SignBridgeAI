@@ -12,6 +12,35 @@ import { configureSupabase } from "../src/database/supabaseClient.js";
 const validSample = () =>
   sample({ sample_id: "b7b18c75-c0ec-4f00-b55e-a2efa6a19907" });
 
+test("metadata edits target one ID with original values and reject invalid inputs", async () => {
+  const row = toRow(validSample(), sign);
+  const values = {
+    label: "새 이름",
+    concept_id: "new.concept",
+    sign_id: sign.sign_id,
+    signer_id: row.signer_id,
+    session_id: row.session_id,
+    description: "",
+    source: "",
+  };
+  let call;
+  const repo = new SampleRepository({
+    rpc: async (name, args) => {
+      call = { name, args };
+      return { data: 3, error: null };
+    },
+  });
+  assert.equal(await repo.editMetadata(row, values, 3), 3);
+  assert.equal(call.name, "sb_edit_sample_metadata");
+  assert.equal(call.args.p_id, row.id);
+  assert.equal(call.args.p_expected.label, row.label);
+  assert.equal(call.args.p_new.concept_id, "new.concept");
+  assert.equal(call.args.p_expected_count, 3);
+  assert.equal("frames" in call.args.p_new, false);
+  await assert.rejects(repo.editMetadata(row, { ...values, label: "" }, 3));
+  await assert.rejects(repo.editMetadata({ ...row, id: "bad" }, values, 3));
+});
+
 test("active full sample lookup is limited to the requested language, UUID and non-archived real rows", async () => {
   const seen = [],
     id = crypto.randomUUID();

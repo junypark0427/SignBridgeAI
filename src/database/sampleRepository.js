@@ -251,6 +251,63 @@ export class SampleRepository {
     fromRow(data);
     return data;
   }
+  async editMetadata(row, values, expectedCount) {
+    if (
+      !UUID.test(row.id) ||
+      !Number.isInteger(expectedCount) ||
+      expectedCount < 1
+    )
+      throw new Error("수정 대상이 올바르지 않습니다.");
+    const expected = Object.fromEntries(
+      [
+        "sign_id",
+        "label",
+        "concept_id",
+        "signer_id",
+        "session_id",
+        "sign_metadata",
+      ].map((k) => [k, row[k]]),
+    );
+    const sign = {
+      ...row.sign_metadata,
+      ...Object.fromEntries(
+        ["sign_id", "label", "concept_id", "description", "source"].map((k) => [
+          k,
+          values[k],
+        ]),
+      ),
+    };
+    const errors = validateSign(sign);
+    for (const key of ["signer_id", "session_id"])
+      if (
+        typeof values[key] !== "string" ||
+        !values[key].trim() ||
+        values[key].length > 500
+      )
+        errors.push(`${key}를 확인하세요.`);
+    if (errors.length) throw new Error(errors.join(" "));
+    const { data, error } = await this.client.rpc("sb_edit_sample_metadata", {
+      p_id: row.id,
+      p_expected: expected,
+      p_new: values,
+      p_expected_count: expectedCount,
+    });
+    if (error) throw error;
+    if (!Number.isInteger(data) || data < 1)
+      throw new Error("서버의 수정 결과를 확인하지 못했습니다.");
+    return data;
+  }
+  async editGroupCount(signId) {
+    const { count, error } = await this.client
+      .from("sign_samples")
+      .select("id", { count: "exact", head: true })
+      .eq("sign_id", signId)
+      .eq("is_test", false);
+    if (error) throw error;
+    if (!Number.isInteger(count))
+      throw new Error("수정 대상 개수를 확인할 수 없습니다.");
+    return count;
+  }
   async getActive(id, language) {
     if (!UUID.test(id) || !["KSL", "ASL"].includes(language))
       throw new Error("공용 샘플 식별자 또는 언어가 올바르지 않습니다.");

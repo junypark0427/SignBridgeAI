@@ -1,5 +1,9 @@
 # Supabase 공용 데이터베이스
 
+## 공용 메타데이터 수정
+
+`supabase/migrations/202611140001_edit_metadata.sql`은 공용 샘플의 메타데이터 수정 함수를 추가한다. 익명 사용자가 함수를 호출할 수 있으므로 방문자 누구나 단어 이름, 의미 코드, 표현 ID, 설명, 출처, 촬영자 ID 및 세션 ID를 수정할 수 있다. 언어와 원본 프레임은 수정하지 않는다. 공통 단어 정보는 같은 표현 ID에 일괄 적용되며, 촬영자와 세션은 선택한 샘플에만 적용된다. 의미 코드를 바꾸면 대응 관계 검증을 해제한다. 수정된 이전 표현 ID는 재사용하지 않으며 오래된 기기에서 충돌하는 자료 업로드를 차단한다. 개별 기기의 로컬 사본은 자동 수정되지 않으므로 JSON 백업과 공용 자료 확인이 필요하다.
+
 기존 SignBridgeAI 프로젝트 `oswaoslijdmjymebwknh`를 사용합니다. 새 프로젝트 생성·기존 자료 초기화는 하지 않습니다. Project Settings → API Keys에서 Project URL과 Publishable Key를 확인합니다. Secret/service_role은 쓰지 않습니다.
 
 ## 설정과 SQL
