@@ -3,6 +3,7 @@ import { rowsToDataset, fromRow } from "../database/sampleRepository.js";
 import { downloadFile } from "../shared/download.js";
 import { cloudErrorText, summarizeSync } from "../database/cloudStatus.js";
 import { confirmDeletion } from "./confirmDeletion.js";
+import { groupSamples } from "./groupSamples.js";
 
 export class DatasetUI {
   constructor({
@@ -22,8 +23,6 @@ export class DatasetUI {
       onDelete,
     });
     this.filters = { language: "" };
-    this.pages = [{ cursor: null, offset: 0 }];
-    this.pageIndex = 0;
     this.rows = [];
     this.busy = false;
     document.querySelector(".dataset-section").insertAdjacentHTML(
@@ -36,8 +35,8 @@ export class DatasetUI {
         <p class="cloud-freshness"><span id="cloud-freshness">서버 목록 확인 전</span> · <button id="cloud-reset" class="text-button" type="button">필터 초기화</button> · <label>공용 목록 <select id="cloud-archive-view"><option value="active">사용 중인 자료</option><option value="trash">휴지통 (복원 가능)</option></select></label></p>
         <p id="cloud-archive-notice" class="cloud-notice"></p>
         <p class="cloud-notice">저장 확인 후 관절 좌표·익명 ID가 공용 DB에 자동 업로드됩니다. 로그인 없이 누구나 조회·추가할 수 있습니다. 로컬 삭제는 클라우드를 삭제하지 않습니다. 실명·영상은 저장하지 마세요.</p>
-        <div class="data-table-card"><div class="table-scroll"><table><thead><tr><th>단어 / 표현 ID</th><th>촬영자 / 세션</th><th>촬영 일시</th><th>길이 / 프레임</th><th>작업</th></tr></thead><tbody id="cloud-rows"></tbody></table></div><p id="cloud-empty" class="cloud-empty">클라우드를 새로고침해 주세요.</p></div>
-        <div class="cloud-actions"><div><button id="cloud-prev" class="button secondary small" disabled>이전</button><span id="cloud-page">0 / 0</span><button id="cloud-next" class="button secondary small" disabled>다음</button></div><div><button id="cloud-import" class="button secondary small">이 페이지를 로컬로 가져오기</button><button id="cloud-export" class="button dark small">조회 조건 전체 JSON</button></div></div>
+        <div class="data-table-card"><div id="cloud-rows" class="cloud-groups"></div><p id="cloud-empty" class="cloud-empty">클라우드를 새로고침해 주세요.</p></div>
+        <div class="cloud-actions"><div><button id="cloud-import" class="button secondary small">조회 조건 전체를 로컬로 가져오기</button><button id="cloud-export" class="button dark small">조회 조건 전체 JSON</button></div></div>
         <p id="cloud-message" role="status"></p>
       </div>`,
     );
@@ -63,19 +62,9 @@ export class DatasetUI {
       e.preventDefault();
       this.refresh();
     };
-    this.$("cloud-prev").onclick = () => {
-      this.pageIndex--;
-      this.loadPage();
-    };
-    this.$("cloud-next").onclick = () => {
-      this.pages[this.pageIndex + 1] = {
-        cursor: this.rows.at(-1).id,
-        offset: this.pages[this.pageIndex].offset + this.rows.length,
-      };
-      this.pageIndex++;
-      this.loadPage();
-    };
     this.$("cloud-rows").onclick = async (e) => {
+      const groupEdit = e.target.closest("[data-cloud-group-edit]");
+      if (groupEdit) this.openEdit(groupEdit.dataset.cloudGroupEdit, true);
       const edit = e.target.closest("[data-cloud-edit]");
       if (edit) this.openEdit(edit.dataset.cloudEdit);
       const remove = e.target.closest("[data-cloud-delete]");
@@ -125,11 +114,11 @@ export class DatasetUI {
           rows.push(await this.repository.get(row.id));
         await this.onImport(rowsToDataset(rows));
         this.$("cloud-message").textContent =
-          "현재 페이지 데이터를 로컬에 병합했습니다.";
+          "조회 조건에 맞는 공용 데이터를 로컬에 병합했습니다.";
       });
     this.toggle();
     const summary = document.createElement("div");
-    summary.innerHTML = `<div class="stats-grid shared-summary"><div class="stat-card"><span>전체 공용 데이터</span><strong id="shared-all">—</strong></div><div class="stat-card"><span>한국수어 KSL</span><strong id="shared-ksl">—</strong></div><div class="stat-card"><span>미국수어 ASL</span><strong id="shared-asl">—</strong></div></div><div id="shared-words" class="word-counts"></div>`;
+    summary.innerHTML = `<div class="stats-grid shared-summary"><div class="stat-card"><span>전체 공용 데이터</span><strong id="shared-all">—</strong></div><div class="stat-card"><span>한국수어 KSL</span><strong id="shared-ksl">—</strong></div><div class="stat-card"><span>미국수어 ASL</span><strong id="shared-asl">—</strong></div></div>`;
     this.$("cloud-refresh").closest(".dataset-heading").after(summary);
     const advanced = document.createElement("details");
     advanced.className = "dataset-advanced";
@@ -148,7 +137,7 @@ export class DatasetUI {
   $(id) {
     return document.getElementById(id);
   }
-  async openEdit(id) {
+  async openEdit(id, groupOnly = false) {
     await this.action(async () => {
       const row = await this.repository.get(id);
       const count = await this.repository.editGroupCount(row.sign_id);
@@ -164,6 +153,8 @@ export class DatasetUI {
         form.elements[key].value = row[key];
       for (const key of ["description", "source"])
         form.elements[key].value = row.sign_metadata[key] ?? "";
+      for (const key of ["signer_id", "session_id"])
+        form.elements[key].readOnly = groupOnly;
       this.editState = { row, count };
       this.$("cloud-edit-info").textContent =
         `언어 ${row.language} · 촬영 ${new Date(row.created_at).toLocaleString("ko-KR")} · 같은 표현 ${count}개 (휴지통 포함)`;
@@ -297,11 +288,6 @@ export class DatasetUI {
           (button.hasAttribute("data-cloud-archive") &&
             !this.repository?.archiveSupported);
       });
-    this.$("cloud-prev").disabled = this.busy || this.pageIndex === 0;
-    this.$("cloud-next").disabled =
-      this.busy ||
-      !this.rows.length ||
-      this.pages[this.pageIndex].offset + this.rows.length >= (this.total ?? 0);
     this.$("cloud-filters")
       .querySelectorAll("input,select,button")
       .forEach((el) => {
@@ -318,39 +304,26 @@ export class DatasetUI {
       [...new FormData(this.$("cloud-filters"))].map(([k, v]) => [k, v.trim()]),
     );
     this.filters.archived = this.$("cloud-archive-view").value === "trash";
-    this.pages = [{ cursor: null, offset: 0 }];
-    this.pageIndex = 0;
     await this.action(async () => {
-      const summary = await this.repository.summary();
-      this.$("shared-all").textContent = summary.total;
-      this.$("shared-ksl").textContent = summary.ksl;
-      this.$("shared-asl").textContent = summary.asl;
-      this.$("shared-words").innerHTML =
-        summary.words
-          .map(
-            (word) =>
-              `<span>${escapeHTML(word.language)} · ${escapeHTML(word.label)} <strong>${word.count}개</strong></span>`,
-          )
-          .join("") || "등록된 단어가 없습니다.";
-      if (Object.values(this.filters).some(Boolean)) {
-        [this.total, this.globalTotal] = await Promise.all([
-          this.repository.count(this.filters),
-          this.repository.count(),
-        ]);
-      } else {
-        this.total = this.globalTotal = await this.repository.count();
-      }
+      const [ksl, asl] = await Promise.all([
+        this.repository.count({ language: "KSL" }),
+        this.repository.count({ language: "ASL" }),
+      ]);
+      this.globalTotal = ksl + asl;
       await this.fetchPage();
+      this.$("shared-all").textContent = this.globalTotal;
+      this.$("shared-ksl").textContent = ksl;
+      this.$("shared-asl").textContent = asl;
     });
-  }
-  async loadPage() {
-    await this.action(() => this.fetchPage());
   }
   async fetchPage() {
-    const result = await this.repository.page(this.filters, {
-      afterId: this.pages[this.pageIndex].cursor,
-    });
-    this.rows = result.rows;
+    const rows = await this.repository.listMetadata(this.filters);
+    if (rows.some((row) => !["KSL", "ASL"].includes(row.language)))
+      throw new Error(
+        "알 수 없는 수어 언어가 목록에 있습니다. 공용 데이터를 확인하세요.",
+      );
+    this.rows = rows;
+    this.total = this.rows.length;
     this.$("cloud-total").textContent = this.total;
     this.$("cloud-summary-count").textContent = this.globalTotal;
     this.$("cloud-archive-notice").textContent = this.repository
@@ -365,13 +338,20 @@ export class DatasetUI {
       : this.globalTotal > 0
         ? `공용 자료는 전체 ${this.globalTotal}개 있습니다. 현재 필터에 맞는 자료가 없으니 '필터 초기화'로 전체를 확인하세요.`
         : "아직 공유된 시퀀스가 없습니다. 업로드한 기기에서 '업로드 확인됨' 표시와 대기·실패 상태를 확인하세요.";
-    this.$("cloud-page").textContent =
-      `${this.rows.length ? this.pages[this.pageIndex].offset + 1 : 0}–${this.pages[this.pageIndex].offset + this.rows.length} / ${this.total}`;
-    this.$("cloud-rows").innerHTML = this.rows
-      .map(
-        (s) =>
-          `<tr><td><span class="cloud-language">${escapeHTML(s.language)}</span> <strong>${escapeHTML(s.label)}</strong><small>${escapeHTML(s.sign_id)}</small></td><td>${escapeHTML(s.signer_id)}<small>${escapeHTML(s.session_id)}</small></td><td>${escapeHTML(new Date(s.created_at).toLocaleString("ko-KR"))}</td><td>${(s.duration_ms / 1000).toFixed(2)}s<small>${s.frame_count} 프레임</small></td><td><button class="text-button" data-cloud-review="${escapeHTML(s.id)}">검토</button> <button class="text-button" data-cloud-edit="${escapeHTML(s.id)}">수정</button> <button class="text-button delete-text" data-cloud-delete="${escapeHTML(s.id)}">삭제</button> ${s.archived ? `<button class="text-button" data-cloud-archive="${escapeHTML(s.id)}" data-archive-value="false">복원</button>` : ""}</td></tr>`,
-      )
+    const groups = groupSamples(this.rows);
+    this.$("cloud-rows").innerHTML = ["KSL", "ASL"]
+      .map((language) => {
+        const matching = groups.filter((group) => group.language === language);
+        if (!matching.length) return "";
+        return `<section class="cloud-language-section"><h3>${language === "KSL" ? "한국수어 · KSL" : "미국수어 · ASL"}</h3>${matching
+          .map(
+            (group) => `
+        <details class="cloud-group"><summary><span class="cloud-language">${escapeHTML(group.language)}</span><strong>${escapeHTML(group.label)}</strong><span>의미 코드 · ${escapeHTML(group.concept_id)}</span><span>${group.rows.length}개 시퀀스</span>${group.inconsistent ? '<span class="cloud-group-warning">단어 정보 불일치 · 검토 필요</span>' : ""}</summary>
+          <div class="cloud-group-body"><p>표현 ID · ${escapeHTML(group.sign_id)}</p><button class="button secondary small" data-cloud-group-edit="${escapeHTML(group.rows[0].id)}">단어 정보 수정</button>
+          <div class="table-scroll"><table><thead><tr><th>촬영자 / 세션</th><th>촬영 일시</th><th>길이 / 프레임</th><th>작업</th></tr></thead><tbody>${group.rows.map((s) => `<tr><td>${escapeHTML(s.signer_id)}<small>${escapeHTML(s.session_id)}</small></td><td>${escapeHTML(new Date(s.created_at).toLocaleString("ko-KR"))}</td><td>${(s.duration_ms / 1000).toFixed(2)}s<small>${s.frame_count} 프레임</small></td><td><button class="text-button" data-cloud-review="${escapeHTML(s.id)}">검토</button> <button class="text-button" data-cloud-edit="${escapeHTML(s.id)}">수정</button> <button class="text-button delete-text" data-cloud-delete="${escapeHTML(s.id)}">삭제</button> ${s.archived ? `<button class="text-button" data-cloud-archive="${escapeHTML(s.id)}" data-archive-value="false">복원</button>` : ""}</td></tr>`).join("")}</tbody></table></div></div></details>`,
+          )
+          .join("")}</section>`;
+      })
       .join("");
     this.$("cloud-message").textContent =
       this.pendingSuccessMessage ??

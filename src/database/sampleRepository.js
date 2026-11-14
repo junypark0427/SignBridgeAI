@@ -240,6 +240,33 @@ export class SampleRepository {
     // Advance on actual last ID, not requested page size; server limits cannot truncate export.
     return { rows: data, nextCursor: data.at(-1)?.id ?? null };
   }
+  async listMetadata(filters = {}) {
+    const before = await this.count(filters);
+    const rows = [],
+      seen = new Set();
+    let cursor = null;
+    while (true) {
+      const result = await this.page(filters, { afterId: cursor, limit: 100 });
+      if (!result.rows.length) break;
+      for (const row of result.rows) {
+        if (seen.has(row.id))
+          throw new Error(
+            "공용 목록에 중복된 샘플이 있습니다. 새로고침하세요.",
+          );
+        seen.add(row.id);
+        rows.push(row);
+      }
+      if (!result.nextCursor || result.nextCursor === cursor)
+        throw new Error("공용 목록 페이지가 진행되지 않습니다.");
+      cursor = result.nextCursor;
+    }
+    const after = await this.count(filters);
+    if (before !== after || rows.length !== after)
+      throw new Error(
+        "조회 중 공용 데이터 수가 변경되었습니다. 다시 새로고침하세요.",
+      );
+    return rows;
+  }
   async get(id) {
     const { data, error } = await this.client
       .from("sign_samples")
