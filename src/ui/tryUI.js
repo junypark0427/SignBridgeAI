@@ -5,6 +5,7 @@ import { WordCollector } from "../collector/wordCollector.js";
 import { HandSegmenter, segmentToSample } from "../collector/handSegmenter.js";
 import { SentenceUI } from "./sentenceUI.js";
 import { correspondingNames } from "./correspondingNames.js";
+import { CorrespondingMotion } from "./correspondingMotion.js";
 import { SpeechPlayer } from "./speechPlayer.js";
 import {
   loadGallery,
@@ -19,6 +20,10 @@ const shortage =
 export class TryUI {
   constructor({ repository }) {
     this.repository = repository;
+    this.motion = new CorrespondingMotion(
+      $("try-result").parentElement,
+      repository,
+    );
     this.generation = 0;
     this.speech = new SpeechPlayer({
       onStatus: (text) => {
@@ -92,7 +97,10 @@ export class TryUI {
         ? this.stop("탭이 숨겨져 카메라를 종료했습니다.")
         : refresh(),
     );
-    window.addEventListener("signbridge:data-changed", refresh);
+    window.addEventListener("signbridge:data-changed", () => {
+      this.motion.reset({ invalidate: true });
+      refresh();
+    });
     window.addEventListener("online", refresh);
     window.addEventListener("focus", refresh);
     this.toggle();
@@ -115,8 +123,9 @@ export class TryUI {
     const text = options[index];
     if (text) this.speech.speak(text, language === "ko" ? "ko-KR" : "en-US");
   }
-  clearResult() {
+  clearResult({ invalidateMotion = false } = {}) {
     this.speech?.stop({ announce: false });
+    this.motion?.reset({ invalidate: invalidateMotion });
     this.speechNames = { ko: [], en: [] };
     this.sentence?.clearCandidate();
     $("try-result").textContent =
@@ -206,7 +215,7 @@ export class TryUI {
     $("try-data-notice").textContent =
       "선택한 수어의 공용 데이터를 확인하고 있습니다.";
     $("try-register").hidden = true;
-    this.clearResult();
+    this.clearResult({ invalidateMotion: true });
     this.toggle();
     $("try-data-status").textContent = "공용 데이터 불러오는 중…";
     try {
@@ -380,6 +389,8 @@ export class TryUI {
     }
   }
   async renderResult(result, generation, { automatic = false } = {}) {
+    if (generation !== this.generation) return;
+    this.motion?.reset();
     const top = result.top;
     const {
       other,
@@ -425,6 +436,7 @@ export class TryUI {
     this.message(
       `비교 완료.${result.uncertain ? " 후보 간 차이가 작거나 등록 동작과 차이가 큽니다. 정답으로 단정하지 마세요." : ""} ${result.quality.warnings.join(" ")}`,
     );
+    this.motion?.show({ other, matches: counterparts, status });
   }
   enqueueSentenceSegment(frames) {
     const generation = this.generation;
@@ -479,6 +491,7 @@ export class TryUI {
   }
   stop(message) {
     this.speech?.stop({ announce: false });
+    this.motion?.pause();
     this.generation++;
     this.compareAbort?.abort();
     this.predicting = false;

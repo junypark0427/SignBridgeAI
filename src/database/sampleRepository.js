@@ -180,7 +180,13 @@ export class SampleRepository {
         "archived",
         filters.archived === true || filters.archived === "true",
       );
-    for (const key of ["language", "sign_id", "signer_id", "session_id"])
+    for (const key of [
+      "language",
+      "concept_id",
+      "sign_id",
+      "signer_id",
+      "session_id",
+    ])
       if (filters[key]) query = query.eq(key, filters[key]);
     return query;
   }
@@ -222,7 +228,10 @@ export class SampleRepository {
       );
     return { duplicate: true };
   }
-  async page(filters, { afterId = null, limit = 25, full = false } = {}) {
+  async page(
+    filters,
+    { afterId = null, limit = 25, full = false, signal } = {},
+  ) {
     await this.ready();
     if (!Number.isInteger(limit) || limit < 1 || limit > 100)
       throw new Error("페이지 크기는 1~100이어야 합니다.");
@@ -233,6 +242,7 @@ export class SampleRepository {
       .order("id", { ascending: true })
       .limit(limit);
     if (afterId) query = query.gt("id", afterId);
+    if (signal) query = query.abortSignal(signal);
     const { data, error } = await query;
     if (error) throw error;
     if (!Array.isArray(data))
@@ -335,13 +345,13 @@ export class SampleRepository {
       throw new Error("수정 대상 개수를 확인할 수 없습니다.");
     return count;
   }
-  async getActive(id, language) {
+  async getActive(id, language, { signal } = {}) {
     if (!UUID.test(id) || !["KSL", "ASL"].includes(language))
       throw new Error("공용 샘플 식별자 또는 언어가 올바르지 않습니다.");
     await this.ready();
-    const { data, error } = await this.query({ language }, "*")
-      .eq("id", id)
-      .maybeSingle();
+    let query = this.query({ language }, "*").eq("id", id);
+    if (signal) query = query.abortSignal(signal);
+    const { data, error } = await query.maybeSingle();
     if (error) throw error;
     return data;
   }

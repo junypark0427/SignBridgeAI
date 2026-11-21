@@ -36,7 +36,9 @@ export function configureSupabase(env = import.meta.env ?? {}) {
         fetch: (input, options) =>
           fetch(input, {
             ...options,
-            signal: options?.signal ?? AbortSignal.timeout(20000),
+            signal: options?.signal
+              ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)])
+              : AbortSignal.timeout(20000),
           }),
       },
     });
